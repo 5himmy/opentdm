@@ -4,11 +4,11 @@ Core Stuff
 //web config cache
 typedef struct tdm_config_s
 {
-	struct tdm_config_s	*next;
-	char				name[32];
-	char				description[128];
-	vote_t				settings;
-	unsigned int		last_downloaded;
+    struct tdm_config_s *next;
+    char                name[32];
+    char                description[128];
+    vote_t              settings;
+    unsigned int        last_downloaded;
 } tdm_config_t;
 
 void JoinedTeam (edict_t *ent, qboolean reconnected, qboolean notify);
@@ -18,7 +18,7 @@ void JoinTeam2 (edict_t *ent);
 void ToggleChaseCam (edict_t *ent);
 void SelectNextHelpPage (edict_t *ent);
 void TDM_UpdateTeamNames (void);
-void TDM_SetSkins (void);
+void TDM_SetSkins ();
 void TDM_SetTeamSkins (edict_t *cl, edict_t *target_to_set_skins_for);
 void TDM_SetAllTeamSkins (edict_t *target_to_set_skins_for);
 void TDM_SaveDefaultCvars (void);
@@ -33,7 +33,6 @@ void TDM_ResetVotableVariables (void);
 int TDM_GetTeamFromArg (edict_t *ent, const char *value);
 void TDM_FixDeltaAngles (void);
 void TDM_UpdateSpectator (edict_t *ent);
-void TDM_RandomizeTeams(void);
 
 void TDM_BeginCountdown (void);
 void TDM_BeginMatch (void);
@@ -42,7 +41,14 @@ void TDM_EndMatch (void);
 qboolean TDM_Checkmap (edict_t *ent, const char *mapname);
 void TDM_WriteMaplist (edict_t *ent);
 void TDM_CreateMaplist (void);
+void TDM_ServerDemoStatus(edict_t *ent);
+char *TDM_MakeServerDemoName(void);
+void TDM_RandomizeTeams(void);
+void TDM_RecordMVD(void);
+void TDM_StopMVD(void);
+void TDM_DeleteMVD(char *name);
+int TDM_PingHandicap(int ping);
 
-extern char		**tdm_maplist;
+extern char **tdm_maplist;
 
-extern tdm_download_t	tdm_vote_download;
+extern tdm_download_t tdm_vote_download;
