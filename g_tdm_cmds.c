@@ -64,6 +64,55 @@ static void TDM_ForceReady_f (qboolean status)
 	TDM_CheckMatchStart ();
 }
 
+/**
+ * Toggle the weapon hud
+ *
+ */
+static void TDM_WeaponHud_f(edict_t *ent)
+{
+	if (g_weapon_hud->value == HUD_DISABLED) {
+		gi.cprintf(ent, PRINT_HIGH, "Weapon hud is disabled for this server\n");
+		return;
+	}
+
+	if (g_weapon_hud->value == HUD_FORCED) {
+        gi.cprintf(ent, PRINT_HIGH, "Weapon hud is forced for this server\n");
+        return;
+    }
+
+	if (!ent->client->pers.weaponhud) {
+		ent->client->pers.weaponhud = true;
+		G_StuffCmd(ent, "set uf \"%d\" u\n", ent->client->pers.userflags | UF_WEAPON_HUD);
+		TDM_UpdateHud(ent, true);
+		gi.cprintf(ent, PRINT_HIGH, "Weapon hud enabled\n");
+	} else {
+		ent->client->pers.weaponhud = false;
+		G_StuffCmd(ent, "set uf \"%d\" u\n", ent->client->pers.userflags & ~UF_WEAPON_HUD);
+		TDM_UpdateHud(ent, true);
+		gi.cprintf(ent, PRINT_HIGH, "Weapon hud disabled\n");
+	}
+}
+
+
+static void TDM_AutoScreenshot_f(edict_t *ent) {
+	if (!UF(ent, AUTOSCREENSHOT)) {
+		G_StuffCmd(ent, "set uf \"%d\" u\n", ent->client->pers.userflags | UF_AUTOSCREENSHOT);
+		gi.cprintf(ent, PRINT_HIGH, "Auto-screenshot enabled\n");
+	} else {
+		G_StuffCmd(ent, "set uf \"%d\" u\n", ent->client->pers.userflags & ~UF_AUTOSCREENSHOT);
+		gi.cprintf(ent, PRINT_HIGH, "Auto-screenshot disabled\n");
+	}
+}
+
+static void TDM_AutoRecord_f(edict_t *ent) {
+	if (!UF(ent, AUTORECORD)) {
+		G_StuffCmd(ent, "set uf \"%d\" u\n", ent->client->pers.userflags | UF_AUTORECORD);
+		gi.cprintf(ent, PRINT_HIGH, "Auto-record enabled\n");
+	} else {
+		G_StuffCmd(ent, "set uf \"%d\" u\n", ent->client->pers.userflags & ~UF_AUTORECORD);
+		gi.cprintf(ent, PRINT_HIGH, "Auto-record disabled\n");
+	}
+}
 /*
 ==============
 TDM_StartMatch_f
@@ -107,6 +156,9 @@ void TDM_Commands_f (edict_t *ent)
 		"bfg            Show bfg settings\n"
 		"powerups       Show powerups settings\n"
 		"obsmode        Show obsmode settins\n"
+		"weaponhud      Toggle the weapon hud\n"
+		"autoscreenshot Toggle automatic screenshots\n"
+		"autorecord     Toggle automatic demo recording\n"
 		"\n"
 		"Team Captains\n"
 		"-------------\n"
@@ -151,7 +203,6 @@ void TDM_Acommands_f (edict_t *ent)
 		"readyall           Force all players to be ready\n"
 //		"forceteam          Force team\n"
 		"notreadyall        Force all players not to be ready\n"
-		"shuffle            Randomly shuffle team players\n"
 		);
 }
 
@@ -657,6 +708,11 @@ void TDM_Timeout_f (edict_t *ent)
 		return;
 	}
 
+    if ((int) g_timeout_captain->value && !(teaminfo[TEAM_A].captain == ent || teaminfo[TEAM_B].captain == ent)) {
+        gi.cprintf (ent, PRINT_HIGH, "Only team captains may call a time out.\n");
+        return;
+    }
+
 	if (tdm_match_status == MM_TIMEOUT)
 	{
 		if (level.match_resume_framenum)
@@ -705,22 +761,37 @@ void TDM_Timeout_f (edict_t *ent)
 		return;
 	}
 
+	// timeout limits are imposed on this config (except for admins)
+	if (g_timeout_limit->value && !ent->client->pers.admin) {
+		if (ent->client->pers.timeout_count >= g_timeout_limit->value) {
+			gi.cprintf(
+					ent,
+					PRINT_HIGH,
+					"Timeout limit exceeded (%d/%d)",
+					ent->client->pers.timeout_count,
+					(int)g_timeout_limit->value
+			);
+			return;
+		}
+	}
+
 	if (g_max_timeout->value == 0)
 	{
 		gi.cprintf (ent, PRINT_HIGH, "Time out is disabled on this server.\n");
 		return;
 	}
 
-	// wision: if i'm admin, i want unlimited timeout!
-	// wision: check what happens if admin is just a spectator and he calls timeout
-	// r1: your method didn't work, and the code isn't really designed to allow such. is an hour enough to organize the game? :)
+	// admin timeout is held for 1 hour unless timein is called
 	if (ent->client->pers.admin)
 		time_len = 3600;
 	else
 		time_len = g_max_timeout->value;
 
+
+
 	level.timeout_end_framenum = level.realframenum + SECS_TO_FRAMES (time_len);
 	level.tdm_timeout_caller = ent->client->resp.teamplayerinfo;
+	ent->client->pers.timeout_count++;
 
 	// r1: crash fix, never reset the match status to a timeout (calling time during resume timer)
 	if (tdm_match_status != MM_TIMEOUT)
@@ -785,7 +856,7 @@ char *TDM_SettingsString (void)
 	strcat (settings, "Timelimit: ");
 	strcat (settings, TDM_SetColorText(va("%g minute%s\n", g_match_time->value / 60, g_match_time->value / 60 == 1 ? "" : "s")));
 
-	strcat (settings, "Overtime: ");
+	strcat (settings, "Overtime:  ");
 	switch ((int)g_tie_mode->value)
 	{
 		case 0:
@@ -821,27 +892,42 @@ char *TDM_SettingsString (void)
 			strcat (settings, " ");
 		}
 	}
-	strcat (settings, "\n");
-	
-	strcat (settings, "\n");
+	strcat (settings, "\n\n");
 
+	strcat(settings, "Armor timer:      ");
+	strcat(settings, TDM_SetColorText(va("%s", ((int)g_armor_timer->value > 0) ? "enabled" : "disabled")));
+	strcat(settings, "\n");
 
-	strcat (settings, va("'%s' skin: ", teaminfo[TEAM_A].name));
+	strcat(settings, "Weapon timer:     ");
+	strcat(settings, TDM_SetColorText(va("%s", ((int)g_weapon_timer->value > 0) ? "enabled" : "disabled")));
+	strcat(settings, "\n\n");
+
+	strcat (settings, va("'%s' skin:  ", teaminfo[TEAM_A].name));
 	strcat (settings, TDM_SetColorText(va("%s\n", teaminfo[TEAM_A].skin)));
 
-	strcat (settings, va("'%s' skin: ", teaminfo[TEAM_B].name));
+	strcat (settings, va("'%s' skin:  ", teaminfo[TEAM_B].name));
 	strcat (settings, TDM_SetColorText(va("%s\n", teaminfo[TEAM_B].skin)));
 
 	strcat (settings, "\n");
 
-	strcat (settings, "Weapon switch: ");
+	strcat (settings, "Weapon switch:    ");
 	strcat (settings, TDM_SetColorText(va("%s\n", switchmode_text[(int)g_fast_weap_switch->value])));
 
-	strcat (settings, "Teleporter mode: ");
+	strcat (settings, "Teleporter mode:  ");
 	strcat (settings, TDM_SetColorText(va("%s\n", telemode_text[(int)g_teleporter_nofreeze->value])));
 
-	strcat (settings, "Gameplay bugs: ");
-	strcat (settings, TDM_SetColorText(va("%s\n", bugs_text[(int)g_bugs->value])));
+	strcat (settings, "Gameplay bugs:    ");
+	strcat (settings, TDM_SetColorText(va("%s\n\n", bugs_text[(int)g_bugs->value])));
+
+	strcat (settings, "Timeouts:         ");
+	strcat (settings, TDM_SetColorText(va("%s\n", ((int)g_timeout_captain->value > 0) ? "captains only" : "all players")));
+
+	strcat (settings, "Timeout limits:   ");
+	if (g_timeout_limit->value) {
+		strcat (settings, TDM_SetColorText(va("%d per player\n\n", (int)g_timeout_limit->value)));
+	} else {
+		strcat (settings, TDM_SetColorText(va("unlimited\n\n")));
+	}
 
 	if (TDM_Is1V1())
 	{
@@ -931,6 +1017,11 @@ void TDM_SV_SaveDefaults_f (void)
 	gi.dprintf ("Default cvars saved.\n");
 }
 
+void TDM_SV_DemoStatus_f(void)
+{
+	TDM_ServerDemoStatus(NULL);
+}
+
 /*
 ==============
 TDM_ServerCommand
@@ -945,6 +1036,8 @@ qboolean TDM_ServerCommand (const char *cmd)
 		TDM_SV_SaveDefaults_f ();
 	else if (!Q_stricmp (cmd, "applysettings"))
 		TDM_SV_ApplySettings_f ();
+	else if (!Q_stricmp(cmd, "demostatus"))
+		TDM_SV_DemoStatus_f();
 	else
 		return false;
 
@@ -1856,6 +1949,51 @@ void TDM_Teamskin_f (edict_t *ent)
 	TDM_UpdateConfigStrings (false);
 }
 
+/**
+ * When a team's safety is on, they can't shoot anymore. This gets toggled
+ * when 50% or more of the players are ready and the rest are just dicking around
+ * shooting. This way their either ready up or go observer.
+ */
+void TDM_CheckSafety(void) {
+
+	edict_t *ent;
+	int players, ready;
+	float percent;
+
+	players = ready = 0;
+
+	if (tdm_match_status > MM_WARMUP)
+		return;
+
+	// maybe don't bother in duel mode
+	if (TDM_Is1V1())
+		return;
+
+	for (ent = g_edicts + 1; ent <= g_edicts + game.maxclients; ent++)
+	{
+		if (!ent->inuse)
+			continue;
+
+		if (!ent->client->pers.team)
+			continue;
+
+		if (ent->client->resp.ready)
+			ready++;
+
+		players++;
+	}
+
+	percent = (float) ready / players;
+
+	if (percent >= 0.5f) {
+		teaminfo[TEAM_A].safety = true;
+		teaminfo[TEAM_B].safety = true;
+	} else {
+		teaminfo[TEAM_A].safety = false;
+		teaminfo[TEAM_B].safety = false;
+	}
+}
+
 /*
 ==============
 TDM_NotReady_f
@@ -1884,6 +2022,7 @@ void TDM_NotReady_f (edict_t *ent)
 
 	gi.bprintf (PRINT_HIGH, "%s is not ready!\n", ent->client->pers.netname);
 
+	TDM_CheckSafety();
 	TDM_CheckMatchStart ();
 }
 
@@ -1915,9 +2054,43 @@ void TDM_Ready_f (edict_t *ent)
 
 	gi.bprintf (PRINT_HIGH, "%s is ready!\n", ent->client->pers.netname);
 
+	TDM_CheckSafety();
 	TDM_CheckMatchStart ();
 }
 
+void TDM_ServerDemoRecord_f(edict_t *ent) {
+    if (!ent->client->pers.admin) {
+        gi.cprintf(ent, PRINT_HIGH, "Referee-only command\n");
+        return;
+    }
+
+    if (game.mvd.recording) {
+        gi.cprintf(ent, PRINT_HIGH, "Already recording a multi-view demo\n");
+        return;
+    }
+
+    if (MVD_CAPABLE){
+        TDM_RecordMVD();
+        gi.cprintf(ent, PRINT_HIGH, "Now recording multi-view demo\n");
+    }
+}
+
+void TDM_ServerDemoStop_f(edict_t *ent) {
+    if (!ent->client->pers.admin) {
+        gi.cprintf(ent, PRINT_HIGH, "Referee-only command\n");
+        return;
+    }
+
+    if (!game.mvd.recording) {
+        gi.cprintf(ent, PRINT_HIGH, "Not recording a multi-view demo\n");
+        return;
+    }
+
+    if (MVD_CAPABLE){
+        TDM_StopMVD();
+        gi.cprintf(ent, PRINT_HIGH, "Recording multi-view demo stopped\n");
+    }
+}
 /*
 ==============
 TDM_Motd_f
@@ -1977,7 +2150,7 @@ void TDM_Motd_f (edict_t *ent)
 
 	ent->client->showmotd = true;
 
-	gi.WriteByte (svc_layout);
+	gi.WriteByte (SVC_LAYOUT);
 	gi.WriteString (string);
 	gi.unicast (ent, true);
 }
@@ -2048,7 +2221,7 @@ void TDM_OldScores_f (edict_t *ent)
 	ent->client->showscores = false;
 	ent->client->showoldscores = true;
 
-	gi.WriteByte (svc_layout);
+	gi.WriteByte (SVC_LAYOUT);
 	gi.WriteString (old_matchinfo.scoreboard_string);
 	gi.unicast (ent, true);
 }
@@ -2414,30 +2587,277 @@ void TDM_TeamEnemySkin_f (edict_t *ent, qboolean team)
 	TDM_SetTeamSkins (ent, NULL);
 }
 
-/*
-==============
-TDM_Shuffle_f
-==============
-Randomize (shuffle) team players.
-*/
+
 void TDM_Shuffle_f(edict_t *ent)
 {
-	if (tdm_match_status != MM_WARMUP)
-	{
-		gi.cprintf (ent, PRINT_HIGH, "You can't shuffle players while a match is in progress.\n");
-		return;
-	}
-
-	if (teaminfo[TEAM_A].players + teaminfo[TEAM_B].players < 2)
-	{
-		gi.cprintf (ent, PRINT_HIGH, "Not enough players to shuffle.\n");
-		return;
-	}
-
 	TDM_RandomizeTeams();
 	gi.bprintf(PRINT_HIGH, "Teams randomized...\n");
 }
 
+/**
+ * Show client the details of their playerconfig
+ */
+void TDM_PlayerConfigDisplay_f(edict_t *ent)
+{
+	char *url;
+	playerconfig_t *cfg;
+
+	if (!ent->client->pers.config.loaded) {
+		gi.cprintf(ent, PRINT_HIGH, "No specific playerconfig is loaded for you, using defaults.\n");
+		return;
+	}
+
+	url = va("http://%s%s%s",
+			g_http_domain->string,
+			g_http_path->string,
+			Info_ValueForKey (ent->client->pers.userinfo, "stats_id")
+	);
+
+	cfg = &ent->client->pers.config;
+
+	gi.cprintf(ent, PRINT_HIGH, "\nRemote playerconfig loaded from %s\n", url);
+	gi.cprintf(ent, PRINT_HIGH, "  auto record:             %s\n", cfg->auto_record ? "yes" : "no");
+	gi.cprintf(ent, PRINT_HIGH, "  auto screenshot:         %s\n", cfg->auto_screenshot ? "yes" : "no");
+	gi.cprintf(ent, PRINT_HIGH, "  show weapon hud:         %s\n", cfg->weapon_hud ? "yes" : "no");
+
+	if (cfg->weapon_hud) {
+		gi.cprintf(ent, PRINT_HIGH, "    X offset:              %d\n", cfg->weapon_hud_x);
+		gi.cprintf(ent, PRINT_HIGH, "    Y offset:              %d\n", cfg->weapon_hud_y);
+	}
+
+	gi.cprintf(ent, PRINT_HIGH, "  auto-time armor:         %s\n", cfg->armor_timer ? "yes" : "no");
+
+	if (cfg->armor_timer) {
+		gi.cprintf(ent, PRINT_HIGH, "    armor type:              \n");
+	}
+
+	gi.cprintf(ent, PRINT_HIGH, "  auto-time weapons:       %s\n", cfg->weapon_timer ? "yes" : "no");
+
+	if (cfg->weapon_timer) {
+		gi.cprintf(ent, PRINT_HIGH, "    weapons:                 \n");
+	}
+
+	if (cfg->teamskin[0] != 0) {
+		gi.cprintf(ent, PRINT_HIGH, "  team skin:               %s\n", cfg->teamskin);
+	}
+	if (cfg->enemyskin[0] != 0) {
+		gi.cprintf(ent, PRINT_HIGH, "  enemy skin:              %s\n", cfg->enemyskin);
+	}
+}
+
+/**
+ * Just for testing stuff
+ */
+void TDM_Test_f(edict_t *ent) {
+}
+
+
+/**
+ * Ignore chat
+ */
+void TDM_Ignore_f(edict_t *ent, int level)
+{
+	if (ent->client->pers.ignore & level) {
+		ent->client->pers.ignore &= ~level;
+	} else {
+		ent->client->pers.ignore |= level;
+	}
+}
+
+
+/**
+ * Start an armor timer or set the auto-timer mask
+ */
+void TDM_ArmorTimer_f(edict_t *ent)
+{
+	char *mask;
+
+	if (gi.argc() == 2 && !Q_stricmp(gi.argv(1), "-h")){
+		gi.cprintf(ent, PRINT_HIGH,
+				"%s: %s - Start an armor timer\n"
+				"       %s [%s] - set your auto-timing mask\n\n"
+				"%s contains any: [-/+]all [-/+]ra [-/+]ya [-/+]ga\n\n",
+				//TDM_SetColorText("Usage"),
+				"Usage",
+				gi.argv(0),
+				gi.argv(0),
+				//TDM_SetColorText("armor_string"),
+				//TDM_SetColorText("armor_string")
+				"armor_string",
+				"armor_string"
+		);
+
+		return;
+	}
+
+	if (g_armor_timer->value) {
+		// command used alone, just start a timer
+		if (gi.argc() < 2) {
+			ent->client->pers.item_timer[TIMER_ARMOR] = level.framenum + SECS_TO_FRAMES(20);
+			ent->client->pers.item_timer_icon[TIMER_ARMOR] = gi.imageindex("i_combatarmor");
+		} else {
+			mask = gi.argv(1);
+			if (mask[0] >= '0' && mask[0] <= '9') { // assume it's a numeric mask
+				ent->client->pers.armor_mask = atoi(mask);
+			} else {
+				ent->client->pers.armor_mask = TDM_ArmorStringToBitmask(mask);
+			}
+
+			G_StuffCmd(ent, "set amask \"%d\" u", ent->client->pers.armor_mask);
+			gi.cprintf(ent, PRINT_HIGH, "Armor timer mask set\n");
+		}
+	} else {
+		if (((int)g_vote_mask->value) & VOTE_ARMOR_TIMER) {
+			gi.cprintf(ent, PRINT_HIGH, "Armor timer disabled, vote to enable it: \"vote armortimer 1\"\n");
+		} else {
+			gi.cprintf(ent, PRINT_HIGH, "Armor timer disabled in server config\n");
+		}
+	}
+}
+
+
+/**
+ * Start a weapon timer, or set auto-timer bitmask
+ */
+void TDM_WeaponTimer_f(edict_t *ent)
+{
+	char *mask;
+
+	if (gi.argc() == 2 && !Q_stricmp(gi.argv(1), "-h")){
+		gi.cprintf(ent, PRINT_HIGH,
+				"%s: %s - Start a weapon timer\n"
+				"       %s [%s] - set your auto-timing mask\n\n"
+				"%s contains any: [-/+]all [-/+]sg [-/+]ssg\n"
+				"  [-/+]mg [-/+]cg [-/+]gl [-/+]hb [-/+]rl [-/+]rg [-/+]bfg\n\n",
+				//TDM_SetColorText("Usage"),
+				"Usage",
+				gi.argv(0),
+				gi.argv(0),
+				//TDM_SetColorText("weapon_string"),
+				//TDM_SetColorText("weapon_string")
+				"weapon_string",
+				"weapon_string"
+		);
+
+		return;
+	}
+
+	if (g_weapon_timer->value) {
+
+		// command used alone, just start a timer
+		if (gi.argc() < 2) {
+			ent->client->pers.item_timer[TIMER_WEAPON] = level.framenum + SECS_TO_FRAMES(30);
+			ent->client->pers.item_timer_icon[TIMER_WEAPON] = gi.imageindex("w_blaster");
+		} else {
+			mask = gi.argv(1);
+			if (mask[0] >= '0' && mask[0] <= '9') { // assume it's a numeric mask
+				ent->client->pers.weapon_mask = atoi(mask);
+			} else {
+				ent->client->pers.weapon_mask = TDM_WeaponStringToBitmask(mask);
+			}
+
+			G_StuffCmd(ent, "set wmask \"%d\" u", ent->client->pers.weapon_mask);
+			gi.cprintf(ent, PRINT_HIGH, "Weapon timer mask set\n");
+		}
+	} else {
+		if (((int)g_vote_mask->value) & VOTE_WEAPON_TIMER) {
+			gi.cprintf(ent, PRINT_HIGH, "Weapon timer disabled, vote to enable it: \"vote weapontimer 1\"\n");
+		} else {
+			gi.cprintf(ent, PRINT_HIGH, "Weapon timer disabled in server config\n");
+		}
+	}
+}
+
+/**
+ * List available maps in console
+ */
+void TDM_Maplist_f(edict_t *ent)
+{
+	if (!g_maplistfile || !g_maplistfile->string[0]) {
+		gi.cprintf(ent, PRINT_HIGH, "maplist is undefined on this server.\n");
+		return;
+	}
+
+	TDM_WriteMaplist(ent);
+}
+
+/**
+ * Players issue this command to see the randomized list of maps and
+ * which one is next.
+ */
+void TDM_RandomMap_f(edict_t *ent)
+{
+    randmap_t *list;
+    int index;
+    int i;
+    char buf[150];
+    char buf2[MAX_QPATH];
+    char *arg;
+
+    arg = gi.argv(1);
+    if (!arg[0]) {  // no arg given, use current team
+        if (ent->client->pers.team > TEAM_SPEC) {
+            index = teaminfo[ent->client->pers.team].players;
+        } else {
+            gi.cprintf(ent, PRINT_HIGH, "Specs must specify a list. Usage: %s [1-%d]\n", gi.argv(0), RM_MAX-1);
+            return;
+        }
+    } else {
+        if (!isdigit(arg[0])) {
+            gi.cprintf(ent, PRINT_HIGH, "Usage: %s [1-%d]\n", gi.argv(0), RM_MAX-1);
+            return;
+        }
+        index = atoi(arg);
+    }
+
+    if (index >= RM_MAX) {
+        gi.cprintf(ent, PRINT_HIGH, "Usage: %s [1-%d]\n", gi.argv(0), RM_MAX-1);
+        return;
+    }
+
+    list = &game.random_maps[index];
+    if (list->total == 0) {
+        gi.cprintf(ent, PRINT_HIGH, "No maps listed for teams of %d\n", index);
+        return;
+    }
+
+    memset(buf2, 0, sizeof(buf2));
+    TDM_AsciiToConsole(buf2, list->maps[list->index]);
+
+    gi.cprintf(ent, PRINT_HIGH, "Next random map: %s\n\n", buf2);
+    gi.cprintf(ent, PRINT_HIGH, "Maplist for %d's:\n", index);
+
+    memset(buf, 0, sizeof(buf));
+    for (i=1; i<=list->total; i++) {
+        if (list->index == i-1) {
+            strcat(buf, va("%-12s", buf2));
+        } else {
+            strcat(buf, va("%-12s", list->maps[i-1]));
+        }
+        if (i % 6 == 0) {
+            gi.cprintf(ent, PRINT_HIGH, "%s\n", buf);
+            memset(buf, 0, sizeof(buf));
+        }
+    }
+    gi.cprintf(ent, PRINT_HIGH, "%s\n", buf);
+}
+
+/**
+ * Admin command, re-randomize the random map lists
+ */
+void TDM_ShuffleMaps_f(edict_t *ent)
+{
+    int i;
+    randmap_t *rm;
+
+    for (i=1; i<RM_MAX; i++) {
+        rm = &game.random_maps[i];
+        RandomizeArray((void *)rm->maps, rm->total);
+        rm->index = 0;
+    }
+
+    gi.cprintf(ent, PRINT_HIGH, "Random map lists shuffled\n");
+}
 /*
 ==============
 TDM_Command
@@ -2446,240 +2866,286 @@ Process TDM commands (from ClientCommand)
 */
 qboolean TDM_Command (const char *cmd, edict_t *ent)
 {
-	if (ent->client->pers.admin)
-	{
-		if (!Q_stricmp (cmd, "forceready") || !Q_stricmp (cmd, "readyall") || !Q_stricmp (cmd, "allready") || !Q_stricmp (cmd, "startcountdown"))
-		{
-			TDM_ForceReady_f (true);
-			return true;
-		}
-		/*else if (!Q_stricmp (cmd, "startmatch"))
-		{
-			TDM_StartMatch_f (ent);
-			return true;
-		}*/
-		else if (!Q_stricmp (cmd, "kickplayer"))
-		{
-			TDM_KickPlayer_f (ent);
-			return true;
-		}
-		else if (!Q_stricmp (cmd, "kick") || !Q_stricmp (cmd, "boot"))
-		{
-			TDM_Kick_f (ent);
-			return true;
-		}
-		else if (!Q_stricmp (cmd, "ban"))
-		{
-			TDM_Ban_f (ent);
-			return true;
-		}
-		else if (!Q_stricmp (cmd, "forceteam"))
-		{
-			TDM_Forceteam_f (ent);
-			return true;
-		}
-		// wision: some more acommands
-		else if (!Q_stricmp (cmd, "kickban"))
-		{
-			TDM_Kickban_f (ent);
-			return true;
-		}
-		else if (!Q_stricmp (cmd, "acommands"))
-		{
-			TDM_Acommands_f (ent);
-			return true;
-		}
-		else if (!Q_stricmp (cmd, "unreadyall") || !Q_stricmp (cmd, "notreadyall"))
-		{
-			TDM_ForceReady_f (false);
-			return true;
-		}
-		else if (!Q_stricmp (cmd, "unban"))
-		{
-			TDM_Unban_f (ent);
-			return true;
-		}
-		else if (!Q_stricmp (cmd, "bans"))
-		{
-			TDM_Bans_f (ent);
-			return true;
-		}
-		else if (!Q_stricmp (cmd, "break"))
-		{
-			TDM_Break_f (ent);
-			return true;
-		}
-		else if (!Q_stricmp (cmd, "changemap"))
-		{
-			TDM_Changemap_f (ent);
-			return true;
-		}
-		else if (!Q_stricmp (cmd, "shuffle"))
-		{
-			TDM_Shuffle_f (ent);
-			return true;
-		}
-	}
+    if (ent->client->pers.admin)
+    {
+        if (!Q_stricmp (cmd, "forceready") || !Q_stricmp (cmd, "readyall") || !Q_stricmp (cmd, "allready") || !Q_stricmp (cmd, "startcountdown"))
+        {
+            TDM_ForceReady_f (true);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "kickplayer"))
+        {
+            TDM_KickPlayer_f (ent);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "kick") || !Q_stricmp (cmd, "boot"))
+        {
+            TDM_Kick_f (ent);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "ban"))
+        {
+            TDM_Ban_f (ent);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "forceteam"))
+        {
+            TDM_Forceteam_f (ent);
+            return true;
+        }
+        // wision: some more acommands
+        else if (!Q_stricmp (cmd, "kickban"))
+        {
+            TDM_Kickban_f (ent);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "acommands"))
+        {
+            TDM_Acommands_f (ent);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "unreadyall") || !Q_stricmp (cmd, "notreadyall"))
+        {
+            TDM_ForceReady_f (false);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "unban"))
+        {
+            TDM_Unban_f (ent);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "bans"))
+        {
+            TDM_Bans_f (ent);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "break"))
+        {
+            TDM_Break_f (ent);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "changemap"))
+        {
+            TDM_Changemap_f (ent);
+            return true;
+        }
+        else if (!Q_stricmp (cmd, "shuffle"))
+        {
+            TDM_Shuffle_f (ent);
+            return true;
+        }
+        else if (!Q_stricmp(cmd, "serverdemorecord"))
+        {
+            //TDM_ServerDemoRecord_f(ent);
+            return true;
+        }
+        else if (!Q_stricmp(cmd, "serverdemostop"))
+        {
+            //TDM_ServerDemoStop_f(ent);
+            return true;
+        }
+        else if (!Q_stricmp(cmd, "shufflemaps"))
+        {
+            TDM_ShuffleMaps_f(ent);
+            return true;
+        }
+    }
 
-	// let's allow voting during the timeout
-	if (tdm_match_status == MM_TIMEOUT)
-	{
-		if (!Q_stricmp (cmd, "vote"))
-			TDM_Vote_f (ent);
-		else if (!Q_stricmp (cmd, "yes") || !Q_stricmp (cmd, "no"))
-			TDM_Vote_f (ent);
-	}
-	//only a few commands work in time out mode or intermission
-	if (tdm_match_status == MM_TIMEOUT || tdm_match_status == MM_SCOREBOARD)
-	{
-		if (!Q_stricmp (cmd, "commands"))
-			TDM_Commands_f (ent);
-		else if (!Q_stricmp (cmd, "settings") || !Q_stricmp (cmd, "matchinfo"))
-			TDM_Settings_f (ent);
-		else if (!Q_stricmp (cmd, "calltime") | !Q_stricmp (cmd, "pause") || !Q_stricmp (cmd, "ctime") ||
-				!Q_stricmp (cmd, "time") || !Q_stricmp (cmd, "hold"))
-			TDM_Timeout_f (ent);
-		else if (!Q_stricmp (cmd, "ghost") || !Q_stricmp (cmd, "restore") || !Q_stricmp (cmd, "recover") | !Q_stricmp (cmd, "rejoin"))
-			TDM_Ghost_f (ent);
-		else if (!Q_stricmp (cmd, "win"))
-			TDM_Win_f (ent);
-		else if (!Q_stricmp (cmd, "observer") || !Q_stricmp (cmd, "spectate") || !Q_stricmp (cmd, "chase") ||
-				!Q_stricmp (cmd, "spec") || !Q_stricmp (cmd, "obs"))
-			TDM_Spectate_f (ent);
-		else if (!Q_stricmp (cmd, "pickplayer") || !Q_stricmp (cmd, "pick"))
-			TDM_PickPlayer_f (ent);
-		else if (!Q_stricmp (cmd, "invite"))
-			TDM_Invite_f (ent);
-		else if (!Q_stricmp (cmd, "accept"))
-			TDM_Accept_f (ent);
-		else if (!Q_stricmp (cmd, "admin") || !Q_stricmp (cmd, "referee"))
-			TDM_Admin_f (ent);
-		else if (!Q_stricmp (cmd, "stopsound"))
-			return true;	//prevent chat from our stuffcmds on people who have no sound
-		else
-			return true;	//don't print everything else as a text
+    // let's allow voting during the timeout
+    if (tdm_match_status == MM_TIMEOUT)
+    {
+        if (!Q_stricmp (cmd, "vote"))
+            TDM_Vote_f (ent);
+        else if (!Q_stricmp (cmd, "yes") || !Q_stricmp (cmd, "no"))
+            TDM_Vote_f (ent);
+    }
+    //only a few commands work in time out mode or intermission
+    if (tdm_match_status == MM_TIMEOUT || tdm_match_status == MM_SCOREBOARD)
+    {
+        if (!Q_stricmp (cmd, "commands"))
+            TDM_Commands_f (ent);
+        else if (!Q_stricmp (cmd, "settings") || !Q_stricmp (cmd, "matchinfo"))
+            TDM_Settings_f (ent);
+        else if (!Q_stricmp (cmd, "calltime") || !Q_stricmp (cmd, "pause") || !Q_stricmp (cmd, "ctime") ||
+                !Q_stricmp (cmd, "time") || !Q_stricmp (cmd, "hold"))
+            TDM_Timeout_f (ent);
+        else if (!Q_stricmp (cmd, "ghost") || !Q_stricmp (cmd, "restore") || !Q_stricmp (cmd, "recover") || !Q_stricmp (cmd, "rejoin"))
+            TDM_Ghost_f (ent);
+        else if (!Q_stricmp (cmd, "win"))
+            TDM_Win_f (ent);
+        else if (!Q_stricmp (cmd, "observer") || !Q_stricmp (cmd, "spectate") || !Q_stricmp (cmd, "chase") ||
+                !Q_stricmp (cmd, "spec") || !Q_stricmp (cmd, "obs"))
+            TDM_Spectate_f (ent);
+        else if (!Q_stricmp (cmd, "pickplayer") || !Q_stricmp (cmd, "pick"))
+            TDM_PickPlayer_f (ent);
+        else if (!Q_stricmp (cmd, "invite"))
+            TDM_Invite_f (ent);
+        else if (!Q_stricmp (cmd, "accept"))
+            TDM_Accept_f (ent);
+        else if (!Q_stricmp (cmd, "admin") || !Q_stricmp (cmd, "referee"))
+            TDM_Admin_f (ent);
+        else if (!Q_stricmp (cmd, "stopsound"))
+            return true;	//prevent chat from our stuffcmds on people who have no sound
+        else if (!Q_stricmp(cmd, "weaponhud") || !Q_stricmp(cmd, "hud"))
+            TDM_WeaponHud_f(ent);
+        else if (!Q_stricmp(cmd, "autoscreenshot"))
+            TDM_AutoScreenshot_f(ent);
+        else if (!Q_stricmp(cmd, "autorecord"))
+            TDM_AutoRecord_f(ent);
+        else if (!Q_stricmp(cmd, "ignorespecs"))
+            TDM_Ignore_f(ent, IGNORE_CHAT_SPEC);
+        else if (!Q_stricmp(cmd, "ignoreplayers"))
+            TDM_Ignore_f(ent, IGNORE_CHAT_PLAYERS);
+        else if (!Q_stricmp(cmd, "ignoreall"))
+            TDM_Ignore_f(ent, IGNORE_CHAT_ALL);
+        else
+            return true;	//don't print everything else as a text
 
-		return true;
-	}
-	else
-	{
-		if (!Q_stricmp (cmd, "ready"))
-			TDM_Ready_f (ent);
-		else if (!Q_stricmp (cmd, "notready") || !Q_stricmp (cmd, "unready") || !Q_stricmp (cmd, "noready"))
-			TDM_NotReady_f (ent);
-		else if (!Q_stricmp (cmd, "kickplayer") || !Q_stricmp (cmd, "removeplayer") || !Q_stricmp (cmd, "remove"))
-			TDM_KickPlayer_f (ent);
-		else if (!Q_stricmp (cmd, "admin") || !Q_stricmp (cmd, "referee"))
-			TDM_Admin_f (ent);
-		else if (!Q_stricmp (cmd, "captain"))
-			TDM_Captain_f (ent);
-		else if (!Q_stricmp (cmd, "captains"))
-			TDM_Captains_f (ent);
-		else if (!Q_stricmp (cmd, "vote"))
-			TDM_Vote_f (ent);
-		else if (!Q_stricmp (cmd, "yes") || !Q_stricmp (cmd, "no"))
-			TDM_Vote_f (ent);
-		else if (!Q_stricmp (cmd, "lockteam") || !Q_stricmp (cmd, "lock"))
-			TDM_Lockteam_f (ent, true);
-		else if (!Q_stricmp (cmd, "unlockteam") || !Q_stricmp (cmd, "unlock"))
-			TDM_Lockteam_f (ent, false);
-		else if (!Q_stricmp (cmd, "pickplayer") || !Q_stricmp (cmd, "pick"))
-			TDM_PickPlayer_f (ent);
-		else if (!Q_stricmp (cmd, "invite"))
-			TDM_Invite_f (ent);
-		else if (!Q_stricmp (cmd, "accept"))
-			TDM_Accept_f (ent);
-		else if (!Q_stricmp (cmd, "teamskin"))
-			TDM_Teamskin_f (ent);
-		else if (!Q_stricmp (cmd, "teamname"))
-			TDM_Teamname_f (ent);
-		else if (!Q_stricmp (cmd, "teamready") || !Q_stricmp (cmd, "readyteam"))
-			TDM_Changeteamstatus_f (ent, true);
-		else if (!Q_stricmp (cmd, "teamnotready") || !Q_stricmp (cmd, "notreadyteam"))
-			TDM_Changeteamstatus_f (ent, false);
-		else if (!Q_stricmp (cmd, "menu") || !Q_stricmp (cmd, "ctfmenu") || !Q_stricmp (cmd, "inven"))
-			TDM_ShowTeamMenu (ent);
-		else if (!Q_stricmp (cmd, "commands"))
-			TDM_Commands_f (ent);
-		else if (!Q_stricmp (cmd, "join") || !Q_stricmp (cmd, "team"))
-			TDM_Team_f (ent);
-		else if (!Q_stricmp (cmd, "settings") || !Q_stricmp (cmd, "matchinfo"))
-			TDM_Settings_f (ent);
-		else if (!Q_stricmp (cmd, "observer") || !Q_stricmp (cmd, "spectate") || !Q_stricmp (cmd, "chase") ||
-				!Q_stricmp (cmd, "spec") || !Q_stricmp (cmd, "obs"))
-			TDM_Spectate_f (ent);
-		else if (!Q_stricmp (cmd, "calltime") | !Q_stricmp (cmd, "pause") || !Q_stricmp (cmd, "ctime") ||
-				!Q_stricmp (cmd, "time") || !Q_stricmp (cmd, "hold"))
-			TDM_Timeout_f (ent);
-		// stats.. this could use some cleanup
-		else if (!Q_stricmp (cmd, "stats") || !Q_stricmp (cmd, "kills") || !Q_stricmp (cmd, "accuracy") ||
-				!Q_stricmp (cmd, "damage") || !Q_stricmp (cmd, "weapons") || !Q_stricmp (cmd, "items") ||
-				!Q_stricmp (cmd, "killstats") || !Q_stricmp (cmd, "deathstats"))
-			TDM_Stats_f (ent, &current_matchinfo);
-		else if (!Q_stricmp (cmd, "oldstats") || !Q_stricmp (cmd, "oldkills") || !Q_stricmp (cmd, "laststats") ||
-				!Q_stricmp (cmd, "lastkills") || !Q_stricmp (cmd, "oldaccuracy") || !Q_stricmp (cmd, "lastaccuracy") ||
-				!Q_stricmp (cmd, "olddamage") || !Q_stricmp (cmd, "lastdamage") || !Q_stricmp (cmd, "oldweapons") ||
-				!Q_stricmp (cmd, "lastweapons") || !Q_stricmp (cmd, "olditems") || !Q_stricmp (cmd, "lastitems") ||
-				!Q_stricmp (cmd, "oldkillstats") || !Q_stricmp (cmd, "lastkillstats") || !Q_stricmp (cmd, "lastdeathstats") ||
-				!Q_stricmp (cmd, "olddeathstats"))
-			TDM_Stats_f (ent, &old_matchinfo);
-		else if (!Q_stricmp (cmd, "teamstats") || !Q_stricmp (cmd, "teamkills") || !Q_stricmp (cmd, "teamaccuracy") ||
-				!Q_stricmp (cmd, "teamdamage") || !Q_stricmp (cmd, "teamweapons") || !Q_stricmp (cmd, "teamitems") ||
-				!Q_stricmp (cmd, "teamkillstats") || !Q_stricmp (cmd, "teamdeathstats"))
-			TDM_TeamStats_f (ent, &current_matchinfo);
-		else if (!Q_stricmp (cmd, "oldteamstats") || !Q_stricmp (cmd, "oldteamkills") || !Q_stricmp (cmd, "lastteamstats") ||
-				!Q_stricmp (cmd, "lastteamkills") || !Q_stricmp (cmd, "oldteamaccuracy") || !Q_stricmp (cmd, "lastteamaccuracy") ||
-				!Q_stricmp (cmd, "oldteamdamage") || !Q_stricmp (cmd, "lastteamdamage") || !Q_stricmp (cmd, "oldteamweapons") ||
-				!Q_stricmp (cmd, "lastteamweapons") || !Q_stricmp (cmd, "oldteamitems") || !Q_stricmp (cmd, "lastteamitems") ||
-				!Q_stricmp (cmd, "oldteamkillstats") || !Q_stricmp (cmd, "lastteamkillstats") || !Q_stricmp (cmd, "lastteamdeathstats") ||
-				!Q_stricmp (cmd, "oldteamdeathstats"))
-			TDM_TeamStats_f (ent, &old_matchinfo);
- 		else if (!Q_stricmp (cmd, "topshots"))
- 			TDM_TopBottomShots_f (ent, false, true);
- 		else if (!Q_stricmp (cmd, "teamtopshots"))
- 			TDM_TopBottomShots_f (ent, true, true);
- 		else if (!Q_stricmp (cmd, "bottomshots"))
- 			TDM_TopBottomShots_f (ent, false, false);
- 		else if (!Q_stricmp (cmd, "teambottomshots"))
- 			TDM_TopBottomShots_f (ent, true, false);
-		else if (!Q_stricmp (cmd, "oldscores") || !Q_stricmp (cmd, "oldscore") || !Q_stricmp (cmd, "lastscores") || !Q_stricmp (cmd, "lastscore"))
-			TDM_OldScores_f (ent);
-		else if (!Q_stricmp (cmd, "ghost") || !Q_stricmp (cmd, "restore") || !Q_stricmp (cmd, "recover") | !Q_stricmp (cmd, "rejoin"))
-			TDM_Ghost_f (ent);
-		else if (!Q_stricmp (cmd, "talk"))
-			TDM_Talk_f (ent);
-		else if (!Q_stricmp (cmd, "id") || !Q_stricmp (cmd, "ident"))
-			TDM_Id_f (ent);
-		//wision: some compatibility with old mods (ppl are lazy to learn new commands)
-		else if (!Q_stricmp (cmd, "powerups"))
-			TDM_Powerups_f (ent);
-		else if (!Q_stricmp (cmd, "tl"))
-			TDM_Timelimit_f (ent);
-		else if (!Q_stricmp (cmd, "bfg"))
-			TDM_Bfg_f (ent);
-		else if (!Q_stricmp (cmd, "overtime") || !Q_stricmp (cmd, "ot") || !Q_stricmp (cmd, "tiemode"))
-			TDM_Overtime_f (ent);
-		else if (!Q_stricmp (cmd, "obsmode") || !Q_stricmp (cmd, "chat"))
-			TDM_Obsmode_f (ent);
-		else if (!Q_stricmp (cmd, "motd"))
-			TDM_Motd_f (ent);
-		else if (!Q_stricmp (cmd, "mute"))
-			TDM_Mute_f (ent);
-		else if (!Q_stricmp (cmd, "unmute"))
-			TDM_Unmute_f (ent);
-		else if (!Q_stricmp (cmd, "speclock"))
-			TDM_Speclock_f (ent);
-		else if (!Q_stricmp (cmd, "specinvite"))
-			TDM_Specinvite_f (ent);
-		else if (!Q_stricmp (cmd, "tskin"))
-			TDM_TeamEnemySkin_f (ent, true);
-		else if (!Q_stricmp (cmd, "eskin"))
-			TDM_TeamEnemySkin_f (ent, false);
-		else if (!Q_stricmp (cmd, "stopsound"))
-			return true;	//prevent chat from our stuffcmds on people who have no sound
-		else
-			return false;
-	}
+        return true;
+    }
+    else
+    {
+        if (!Q_stricmp (cmd, "ready"))
+            TDM_Ready_f (ent);
+        else if (!Q_stricmp (cmd, "notready") || !Q_stricmp (cmd, "unready") || !Q_stricmp (cmd, "noready"))
+            TDM_NotReady_f (ent);
+        else if (!Q_stricmp (cmd, "kickplayer") || !Q_stricmp (cmd, "removeplayer") || !Q_stricmp (cmd, "remove") || !Q_stricmp (cmd, "k"))
+            TDM_KickPlayer_f (ent);
+        else if (!Q_stricmp (cmd, "admin") || !Q_stricmp (cmd, "referee"))
+            TDM_Admin_f (ent);
+        else if (!Q_stricmp (cmd, "captain"))
+            TDM_Captain_f (ent);
+        else if (!Q_stricmp (cmd, "captains"))
+            TDM_Captains_f (ent);
+        else if (!Q_stricmp (cmd, "vote"))
+            TDM_Vote_f (ent);
+        else if (!Q_stricmp (cmd, "yes") || !Q_stricmp (cmd, "no"))
+            TDM_Vote_f (ent);
+        else if (!Q_stricmp (cmd, "lockteam") || !Q_stricmp (cmd, "lock"))
+            TDM_Lockteam_f (ent, true);
+        else if (!Q_stricmp (cmd, "unlockteam") || !Q_stricmp (cmd, "unlock"))
+            TDM_Lockteam_f (ent, false);
+        else if (!Q_stricmp (cmd, "pickplayer") || !Q_stricmp (cmd, "pick") || !Q_stricmp (cmd, "p"))
+            TDM_PickPlayer_f (ent);
+        else if (!Q_stricmp (cmd, "invite"))
+            TDM_Invite_f (ent);
+        else if (!Q_stricmp (cmd, "accept"))
+            TDM_Accept_f (ent);
+        else if (!Q_stricmp (cmd, "teamskin"))
+            TDM_Teamskin_f (ent);
+        else if (!Q_stricmp (cmd, "teamname"))
+            TDM_Teamname_f (ent);
+        else if (!Q_stricmp (cmd, "teamready") || !Q_stricmp (cmd, "readyteam"))
+            TDM_Changeteamstatus_f (ent, true);
+        else if (!Q_stricmp (cmd, "teamnotready") || !Q_stricmp (cmd, "notreadyteam"))
+            TDM_Changeteamstatus_f (ent, false);
+        else if (!Q_stricmp (cmd, "menu") || !Q_stricmp (cmd, "ctfmenu") || !Q_stricmp (cmd, "inven"))
+            TDM_ShowTeamMenu (ent);
+        else if (!Q_stricmp (cmd, "commands"))
+            TDM_Commands_f (ent);
+        else if (!Q_stricmp (cmd, "join") || !Q_stricmp (cmd, "team"))
+            TDM_Team_f (ent);
+        else if (!Q_stricmp (cmd, "settings") || !Q_stricmp (cmd, "matchinfo"))
+            TDM_Settings_f (ent);
+        else if (!Q_stricmp (cmd, "observer") || !Q_stricmp (cmd, "spectate") || !Q_stricmp (cmd, "chase") ||
+                !Q_stricmp (cmd, "spec") || !Q_stricmp (cmd, "obs"))
+            TDM_Spectate_f (ent);
+        else if (!Q_stricmp (cmd, "calltime") || !Q_stricmp (cmd, "pause") || !Q_stricmp (cmd, "ctime") ||
+                !Q_stricmp (cmd, "time") || !Q_stricmp (cmd, "hold"))
+            TDM_Timeout_f (ent);
+        // stats.. this could use some cleanup
+        else if (!Q_stricmp (cmd, "stats") || !Q_stricmp (cmd, "kills") || !Q_stricmp (cmd, "accuracy") ||
+                !Q_stricmp (cmd, "damage") || !Q_stricmp (cmd, "weapons") || !Q_stricmp (cmd, "items") ||
+                !Q_stricmp (cmd, "killstats") || !Q_stricmp (cmd, "deathstats"))
+            TDM_Stats_f (ent, &current_matchinfo);
+        else if (!Q_stricmp (cmd, "oldstats") || !Q_stricmp (cmd, "oldkills") || !Q_stricmp (cmd, "laststats") ||
+                !Q_stricmp (cmd, "lastkills") || !Q_stricmp (cmd, "oldaccuracy") || !Q_stricmp (cmd, "lastaccuracy") ||
+                !Q_stricmp (cmd, "olddamage") || !Q_stricmp (cmd, "lastdamage") || !Q_stricmp (cmd, "oldweapons") ||
+                !Q_stricmp (cmd, "lastweapons") || !Q_stricmp (cmd, "olditems") || !Q_stricmp (cmd, "lastitems") ||
+                !Q_stricmp (cmd, "oldkillstats") || !Q_stricmp (cmd, "lastkillstats") || !Q_stricmp (cmd, "lastdeathstats") ||
+                !Q_stricmp (cmd, "olddeathstats"))
+            TDM_Stats_f (ent, &old_matchinfo);
+        else if (!Q_stricmp (cmd, "teamstats") || !Q_stricmp (cmd, "teamkills") || !Q_stricmp (cmd, "teamaccuracy") ||
+                !Q_stricmp (cmd, "teamdamage") || !Q_stricmp (cmd, "teamweapons") || !Q_stricmp (cmd, "teamitems") ||
+                !Q_stricmp (cmd, "teamkillstats") || !Q_stricmp (cmd, "teamdeathstats"))
+            TDM_TeamStats_f (ent, &current_matchinfo);
+        else if (!Q_stricmp (cmd, "oldteamstats") || !Q_stricmp (cmd, "oldteamkills") || !Q_stricmp (cmd, "lastteamstats") ||
+                !Q_stricmp (cmd, "lastteamkills") || !Q_stricmp (cmd, "oldteamaccuracy") || !Q_stricmp (cmd, "lastteamaccuracy") ||
+                !Q_stricmp (cmd, "oldteamdamage") || !Q_stricmp (cmd, "lastteamdamage") || !Q_stricmp (cmd, "oldteamweapons") ||
+                !Q_stricmp (cmd, "lastteamweapons") || !Q_stricmp (cmd, "oldteamitems") || !Q_stricmp (cmd, "lastteamitems") ||
+                !Q_stricmp (cmd, "oldteamkillstats") || !Q_stricmp (cmd, "lastteamkillstats") || !Q_stricmp (cmd, "lastteamdeathstats") ||
+                !Q_stricmp (cmd, "oldteamdeathstats"))
+            TDM_TeamStats_f (ent, &old_matchinfo);
+        else if (!Q_stricmp (cmd, "topshots"))
+            TDM_TopBottomShots_f (ent, false, true);
+        else if (!Q_stricmp (cmd, "teamtopshots"))
+            TDM_TopBottomShots_f (ent, true, true);
+        else if (!Q_stricmp (cmd, "bottomshots"))
+            TDM_TopBottomShots_f (ent, false, false);
+        else if (!Q_stricmp (cmd, "teambottomshots"))
+            TDM_TopBottomShots_f (ent, true, false);
+        else if (!Q_stricmp (cmd, "oldscores") || !Q_stricmp (cmd, "oldscore") || !Q_stricmp (cmd, "lastscores") || !Q_stricmp (cmd, "lastscore"))
+            TDM_OldScores_f (ent);
+        else if (!Q_stricmp (cmd, "ghost") || !Q_stricmp (cmd, "restore") || !Q_stricmp (cmd, "recover") || !Q_stricmp (cmd, "rejoin"))
+            TDM_Ghost_f (ent);
+        else if (!Q_stricmp (cmd, "talk"))
+            TDM_Talk_f (ent);
+        else if (!Q_stricmp (cmd, "id") || !Q_stricmp (cmd, "ident"))
+            TDM_Id_f (ent);
+        //wision: some compatibility with old mods (ppl are lazy to learn new commands)
+        else if (!Q_stricmp (cmd, "powerups"))
+            TDM_Powerups_f (ent);
+        else if (!Q_stricmp (cmd, "tl"))
+            TDM_Timelimit_f (ent);
+        else if (!Q_stricmp (cmd, "bfg"))
+            TDM_Bfg_f (ent);
+        else if (!Q_stricmp (cmd, "overtime") || !Q_stricmp (cmd, "ot") || !Q_stricmp (cmd, "tiemode"))
+            TDM_Overtime_f (ent);
+        else if (!Q_stricmp (cmd, "obsmode") || !Q_stricmp (cmd, "chat"))
+            TDM_Obsmode_f (ent);
+        else if (!Q_stricmp (cmd, "motd"))
+            TDM_Motd_f (ent);
+        else if (!Q_stricmp (cmd, "mute"))
+            TDM_Mute_f (ent);
+        else if (!Q_stricmp (cmd, "unmute"))
+            TDM_Unmute_f (ent);
+        else if (!Q_stricmp (cmd, "speclock"))
+            TDM_Speclock_f (ent);
+        else if (!Q_stricmp (cmd, "specinvite"))
+            TDM_Specinvite_f (ent);
+        else if (!Q_stricmp (cmd, "tskin"))
+            TDM_TeamEnemySkin_f (ent, true);
+        else if (!Q_stricmp (cmd, "eskin"))
+            TDM_TeamEnemySkin_f (ent, false);
+        else if (!Q_stricmp(cmd, "weaponhud") || !Q_stricmp(cmd, "hud"))
+            TDM_WeaponHud_f(ent);
+        else if (!Q_stricmp(cmd, "autoscreenshot"))
+            TDM_AutoScreenshot_f(ent);
+        else if (!Q_stricmp(cmd, "autorecord"))
+            TDM_AutoRecord_f(ent);
+        else if (!Q_stricmp(cmd, "playerconfig"))
+            TDM_PlayerConfigDisplay_f(ent);
+        else if (!Q_stricmp(cmd, "test"))
+            TDM_Test_f(ent);
+        else if (!Q_stricmp(cmd, "ignorespecs"))
+            TDM_Ignore_f(ent, IGNORE_CHAT_SPEC);
+        else if (!Q_stricmp(cmd, "ignoreplayers"))
+            TDM_Ignore_f(ent, IGNORE_CHAT_PLAYERS);
+        else if (!Q_stricmp(cmd, "ignoreall"))
+            TDM_Ignore_f(ent, IGNORE_CHAT_ALL);
+        else if (!Q_stricmp(cmd, "armortimer"))
+            TDM_ArmorTimer_f(ent);
+        else if (!Q_stricmp(cmd, "weapontimer"))
+            TDM_WeaponTimer_f(ent);
+        else if (!Q_stricmp(cmd, "maplist") || !Q_stricmp(cmd, "maps"))
+            TDM_Maplist_f(ent);
+        else if (!Q_stricmp (cmd, "stopsound"))
+            return true;	//prevent chat from our stuffcmds on people who have no sound
+        else if (!Q_stricmp(cmd, "randommap"))
+            TDM_RandomMap_f(ent);
+        else
+            return false;
+    }
 
-	return true;
+    return true;
 }
