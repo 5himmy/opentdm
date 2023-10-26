@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "g_local.h"
 #include "m_player.h"
+#include "g_tdm.h"
 
 
 static edict_t	*is_quad;
@@ -44,22 +45,21 @@ static void P_ProjectSource (gclient_t *client, vec3_t point, vec3_t distance, v
 
 qboolean Pickup_Weapon (edict_t *ent, edict_t *other)
 {
-	int				index;
-	const gitem_t	*ammo;
+	int             index;
+	const gitem_t   *ammo;
+	int             i;
 
 	index = ITEM_INDEX(ent->item);
 
-	if ( ( ((int)(dmflags->value) & DF_WEAPONS_STAY)) 
-		&& other->client->inventory[index])
-	{
+	if (((((int) dmflags->value) & DF_WEAPONS_STAY))
+			&& other->client->inventory[index]) {
 		if (!(ent->spawnflags & (DROPPED_ITEM | DROPPED_PLAYER_ITEM) ) )
 			return false;	// leave the weapon for others to pickup
 	}
 
 	other->client->inventory[index]++;
 
-	if (!(ent->spawnflags & DROPPED_ITEM) )
-	{
+	if (!(ent->spawnflags & DROPPED_ITEM)) {
 		// give them some ammo with it
 		ammo = GETITEM (ent->item->ammoindex);
 		if ( (int)dmflags->value & DF_INFINITE_AMMO )
@@ -67,19 +67,54 @@ qboolean Pickup_Weapon (edict_t *ent, edict_t *other)
 		else
 			Add_Ammo (other, ammo, ammo->quantity);
 
-		if (! (ent->spawnflags & DROPPED_PLAYER_ITEM) )
-		{
-			if ((int)(dmflags->value) & DF_WEAPONS_STAY)
+		if (!(ent->spawnflags & DROPPED_PLAYER_ITEM)) {
+			if ((int)(dmflags->value) & DF_WEAPONS_STAY) {
 				ent->flags |= FL_RESPAWN;
-			else
-				SetRespawn (ent, 30);
+			} else {
+				SetRespawn(ent, g_respawn_weapon->value);
+			}
 		}
 	}
 
 	if (other->client->weapon != ent->item && 
-		(other->client->inventory[index] == 1) &&
-		other->client->weapon == GETITEM (ITEM_WEAPON_BLASTER))
+			other->client->inventory[index] == 1 &&
+			other->client->weapon == GETITEM(ITEM_WEAPON_BLASTER)) {
 		other->client->newweapon = ent->item;
+	}
+
+	// update the weapon hud if we just picked up our only one of this weapon
+	if (other->client->pers.weaponhud && other->client->inventory[index] == 1) {
+
+		// ssg/cg/gl overtakes sg/mg/hg icon, don't update if we pick up lesser weap and have better
+		if (index == ITEM_WEAPON_SHOTGUN && other->client->inventory[ITEM_WEAPON_SUPERSHOTGUN] > 0) {
+			return true;
+		} else if (index == ITEM_WEAPON_MACHINEGUN && other->client->inventory[ITEM_WEAPON_CHAINGUN] > 0) {
+			return true;
+		}
+
+		other->client->next_hud_update = level.framenum + SECS_TO_FRAMES(1);
+	}
+
+	// set a timer if enabled
+	if (other->client->pers.weapon_mask && g_weapon_timer->value) {
+
+		// no mask set, set timer for every weapon pickup
+		if (other->client->pers.weapon_mask) {
+
+			// lookup weapon vote bitmask index to game inventory index
+			for (i=0; i<WEAPON_MAX; i++) {
+				if (index == weaponvotes[i].itemindex) {
+					break;
+				}
+			}
+
+			// client wants to time this weapon
+			if (i < WEAPON_MAX && (other->client->pers.weapon_mask & weaponvotes[i].value)) {
+				other->client->pers.item_timer[TIMER_WEAPON] = level.framenum + SECS_TO_FRAMES(30);
+				other->client->pers.item_timer_icon[TIMER_WEAPON] = gi.imageindex(ent->item->icon);
+			}
+		}
+	}
 
 	return true;
 }
@@ -235,6 +270,18 @@ void Think_Weapon (edict_t *ent)
 		ent->client->latched_buttons &= ~BUTTON_ATTACK;
 	}
 
+	// draw attention to the ready status...
+	if ((int)g_ready_attention->value && teaminfo[ent->client->pers.team].safety) {
+		ent->client->buttons &= ~BUTTON_ATTACK;
+		ent->client->latched_buttons &= ~BUTTON_ATTACK;
+	}
+
+	// draw attention to the current vote by not letting weapon fire
+	if (vote.active && (int)g_vote_attention->value >= 2 && tdm_match_status == MM_WARMUP && ent->client->resp.vote == VOTE_HOLD) {
+		ent->client->buttons &= ~BUTTON_ATTACK;
+		ent->client->latched_buttons &= ~BUTTON_ATTACK;
+	}
+
 	// variable FPS support
 	if (ent->client->next_weapon_think > level.framenum)
 		return;
@@ -320,6 +367,16 @@ void Drop_Weapon (edict_t *ent, const gitem_t *item)
 
 	Drop_Item (ent, item);
 	ent->client->inventory[index]--;
+
+	// update the weapon hud if we just dropped our last one of these weapons
+	if (ent->client->pers.weaponhud && ent->client->inventory[index] == 0) {
+		if (index == ITEM_WEAPON_SHOTGUN && ent->client->inventory[ITEM_WEAPON_SUPERSHOTGUN] > 0) {
+			return;
+		} else if (index == ITEM_WEAPON_MACHINEGUN && ent->client->inventory[ITEM_WEAPON_CHAINGUN] > 0) {
+			return;
+		}
+		ent->client->next_hud_update = level.framenum + SECS_TO_FRAMES(1);
+	}
 }
 
 
@@ -724,7 +781,7 @@ void weapon_grenadelauncher_fire (edict_t *ent)
 	fire_grenade (ent, start, forward, damage, 600, 2.5f, radius);
 	TDM_WeaponFired (ent);
 
-	gi.WriteByte (svc_muzzleflash);
+	gi.WriteByte (SVC_MUZZLEFLASH);
 	gi.WriteShort (ent-g_edicts);
 	gi.WriteByte (MZ_GRENADE | is_silenced);
 	gi.multicast (ent->s.origin, MULTICAST_PVS);
@@ -783,7 +840,7 @@ void Weapon_RocketLauncher_Fire (edict_t *ent)
 	TDM_WeaponFired (ent);
 
 	// send muzzle flash
-	gi.WriteByte (svc_muzzleflash);
+	gi.WriteByte (SVC_MUZZLEFLASH);
 	gi.WriteShort (ent-g_edicts);
 	gi.WriteByte (MZ_ROCKET | is_silenced);
 	gi.multicast (ent->s.origin, MULTICAST_PVS);
@@ -834,7 +891,7 @@ void Blaster_Fire (edict_t *ent, vec3_t g_offset, int damage, qboolean hyper, in
 	fire_blaster (ent, start, forward, damage, 1000, effect, hyper);
 
 	// send muzzle flash
-	gi.WriteByte (svc_muzzleflash);
+	gi.WriteByte (SVC_MUZZLEFLASH);
 	gi.WriteShort (ent-g_edicts);
 	if (hyper)
 		gi.WriteByte (MZ_HYPERBLASTER | is_silenced);
@@ -1010,7 +1067,7 @@ void Machinegun_Fire (edict_t *ent)
 	fire_bullet (ent, start, forward, damage, kick, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD, MOD_MACHINEGUN);
 	TDM_WeaponFired (ent);
 
-	gi.WriteByte (svc_muzzleflash);
+	gi.WriteByte (SVC_MUZZLEFLASH);
 	gi.WriteShort (ent-g_edicts);
 	gi.WriteByte (MZ_MACHINEGUN | is_silenced);
 	gi.multicast (ent->s.origin, MULTICAST_PVS);
@@ -1148,7 +1205,7 @@ void Chaingun_Fire (edict_t *ent)
 	}
 
 	// send muzzle flash
-	gi.WriteByte (svc_muzzleflash);
+	gi.WriteByte (SVC_MUZZLEFLASH);
 	gi.WriteShort (ent-g_edicts);
 	gi.WriteByte ((MZ_CHAINGUN1 + shots - 1) | is_silenced);
 	gi.multicast (ent->s.origin, MULTICAST_PVS);
@@ -1213,7 +1270,7 @@ void weapon_shotgun_fire (edict_t *ent)
 	TDM_WeaponFired (ent);
 
 	// send muzzle flash
-	gi.WriteByte (svc_muzzleflash);
+	gi.WriteByte (SVC_MUZZLEFLASH);
 	gi.WriteShort (ent-g_edicts);
 	gi.WriteByte (MZ_SHOTGUN | is_silenced);
 	gi.multicast (ent->s.origin, MULTICAST_PVS);
@@ -1274,7 +1331,7 @@ void weapon_supershotgun_fire (edict_t *ent)
 	TDM_WeaponFired (ent);
 
 	// send muzzle flash
-	gi.WriteByte (svc_muzzleflash);
+	gi.WriteByte (SVC_MUZZLEFLASH);
 	gi.WriteShort (ent-g_edicts);
 	gi.WriteByte (MZ_SSHOTGUN | is_silenced);
 	gi.multicast (ent->s.origin, MULTICAST_PVS);
@@ -1339,7 +1396,7 @@ void weapon_railgun_fire (edict_t *ent)
 	TDM_WeaponFired (ent);
 
 	// send muzzle flash
-	gi.WriteByte (svc_muzzleflash);
+	gi.WriteByte (SVC_MUZZLEFLASH);
 	gi.WriteShort (ent-g_edicts);
 	gi.WriteByte (MZ_RAILGUN | is_silenced);
 	gi.multicast (ent->s.origin, MULTICAST_PVS);
@@ -1380,7 +1437,7 @@ void weapon_bfg_fire (edict_t *ent)
 	if (ent->client->ps.gunframe == 9)
 	{
 		// send muzzle flash
-		gi.WriteByte (svc_muzzleflash);
+		gi.WriteByte (SVC_MUZZLEFLASH);
 		gi.WriteShort (ent-g_edicts);
 		gi.WriteByte (MZ_BFG | is_silenced);
 		gi.multicast (ent->s.origin, MULTICAST_PVS);
