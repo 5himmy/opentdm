@@ -671,7 +671,7 @@ void P_WorldEffects (void)
 		{
 			current_player->air_finished_framenum = level.framenum + SECS_TO_FRAMES(10);
 
-			if (((current_client->breather_framenum - level.framenum) % SECS_TO_FRAMES(2.5f)) == 0)
+			if (((current_client->breather_framenum - level.framenum) % (25*SECS_TO_FRAMES(0.1f))) == 0)
 			{
 				if (!current_client->breather_sound)
 					gi.sound (current_player, CHAN_AUTO, gi.soundindex("player/u_breath1.wav"), 1, ATTN_NORM, 0);
@@ -1001,8 +1001,8 @@ void ClientEndServerFrame (edict_t *ent)
 	//
 	for (i=0 ; i<3 ; i++)
 	{
-		current_client->ps.pmove.origin[i] = COORD2SHORT(ent->s.origin[i]);
-		current_client->ps.pmove.velocity[i] = COORD2SHORT(ent->velocity[i]);
+		current_client->ps.pmove.origin[i] = ent->s.origin[i]*8.0f;
+		current_client->ps.pmove.velocity[i] = ent->velocity[i]*8.0f;
 	}
 
 	//
@@ -1152,9 +1152,8 @@ void ClientEndServerFrame (edict_t *ent)
 			(!(level.realframenum % SECS_TO_FRAMES(1.5f)) && (tdm_match_status == MM_WARMUP || tdm_match_status == MM_TIMEOUT))))
 	{
 		//DeathmatchScoreboardMessage (ent, ent->enemy);
-		gi.WriteByte (svc_layout);
+		gi.WriteByte (SVC_LAYOUT);
 		gi.WriteString (TDM_ScoreBoardString (ent));
 		gi.unicast (ent, false);
 	}
 }
-
