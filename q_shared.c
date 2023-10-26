@@ -379,6 +379,38 @@ float	anglemod(float a)
 //vec3_t	corners[2];
 
 
+// this is the slow, general version
+int BoxOnPlaneSide2 (vec3_t emins, vec3_t emaxs, struct cplane_s *p)
+{
+	int		i;
+	float	dist1, dist2;
+	int		sides;
+	vec3_t	corners[2];
+
+	for (i=0 ; i<3 ; i++)
+	{
+		if (FLOAT_LT_ZERO(p->normal[i]))
+		{
+			corners[0][i] = emins[i];
+			corners[1][i] = emaxs[i];
+		}
+		else
+		{
+			corners[1][i] = emins[i];
+			corners[0][i] = emaxs[i];
+		}
+	}
+	dist1 = DotProduct (p->normal, corners[0]) - p->dist;
+	dist2 = DotProduct (p->normal, corners[1]) - p->dist;
+	sides = 0;
+	if (FLOAT_GE_ZERO(dist1))
+		sides = 1;
+	if (FLOAT_LT_ZERO(dist2))
+		sides |= 2;
+
+	return sides;
+}
+
 /*
 ==================
 BoxOnPlaneSide
@@ -724,10 +756,6 @@ void AddPointToBounds (vec3_t v, vec3_t mins, vec3_t maxs)
 	return 1;
 }*/
 
-static inline int float_not_zero(float x)
-{
-    return fabsf(x) > 1e-6f;
-}
 
 vec_t VectorNormalize (vec3_t v)
 {
@@ -736,7 +764,7 @@ vec_t VectorNormalize (vec3_t v)
 	length = v[0]*v[0] + v[1]*v[1] + v[2]*v[2];
 	length = (float)sqrt (length);		// FIXME
 
-	if (float_not_zero(length))
+	if (FLOAT_NE_ZERO(length))
 	{
 		ilength = 1/length;
 		v[0] *= ilength;
@@ -755,7 +783,7 @@ vec_t VectorNormalize2 (vec3_t v, vec3_t out)
 	length = v[0]*v[0] + v[1]*v[1] + v[2]*v[2];
 	length = (float)sqrt (length);		// FIXME
 
-	if (float_not_zero(length))
+	if (FLOAT_NE_ZERO(length))
 	{
 		ilength = 1/length;
 		out[0] = v[0]*ilength;
@@ -1497,7 +1525,7 @@ void Info_SetValueForKey (char *s, const char *key, const char *value)
 
 	Com_sprintf (newi, sizeof(newi), "\\%s\\%s", key, value);
 
-	if (strlen(newi) + strlen(s) > MAX_INFO_STRING-1)
+	if (strlen(newi) + strlen(s) > MAX_INFO_STRING)
 	{
 		Com_Printf ("Info string length exceeded while trying to set '%s'\n", LOG_GENERAL, newi);
 		return;
