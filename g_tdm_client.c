@@ -121,6 +121,11 @@ void JoinedTeam (edict_t *ent, qboolean reconnected, qboolean notify)
 
 	TDM_TeamsChanged ();
 	respawn (ent);
+
+	// switch from spec to player statusbar, if weapon hud is enabled, that'll happen in respawn()
+	if (!ent->client->pers.weaponhud) {
+		TDM_UpdateHud(ent, true);
+	}
 }
 
 /*
@@ -265,6 +270,7 @@ void ToggleChaseCam (edict_t *ent)
 	else
 		GetChaseTarget(ent);
 
+	TDM_UpdateHud(ent, true);
 	PMenu_Close (ent);
 }
 
@@ -561,184 +567,437 @@ void TDM_Disconnected (edict_t *ent)
 }
 
 
+const char *TDM_CreateSpectatorStatusBar(edict_t *player)
+{
+    char *spec_statusbar;
+    int id_x, id_y;
+
+    // opentdm default
+    id_x = -100;
+    id_y = -80;
+
+    if (player) {
+        id_x += player->client->pers.config.id_x;
+        id_y += player->client->pers.config.id_y;
+    }
+
+    spec_statusbar = va (
+        // First team name
+        "xr -%d "
+        "yb -96 "
+        "string \"%s\" "
+
+        // Second team name
+        "xr -%d "
+        "yb -48 "
+        "string \"%s\" "
+
+        // First team score / status
+        "xr -66 "
+        "yb -120 "
+        "num 4 23 "
+
+        // Second team score / status
+        "yb -72 "
+        "num 4 24 "
+
+        // Match status
+        "xv 205 "
+        "yb -48 "
+        "stat_string 26 "
+
+        // Time value
+        "yb -39 "
+        "stat_string 31 "
+
+        // Timeout message
+        "if 25 "
+            "xr -58 "
+            "yt 50 "
+            "string \"Timeout\" "
+
+            // Timeout value
+            "xr -42 "
+            "yt 58 "
+            "stat_string 25 "
+        "endif "
+
+        // spectator
+        "xv 0 "
+        "yb -58 "
+        "string2 \"SPECTATOR MODE\" "
+
+        // chase camera
+        "if 16 "
+            "xv 0 "
+            "yb -68 "
+            "string \"Chasing\" "
+            "xv 64 "
+            "stat_string 16 "
+        "endif "
+
+        "yb -24 "
+
+        "if 16 "
+            // health
+            "xv 0 "
+            "hnum "
+            "xv 50 "
+            "pic 0 "
+        "endif "
+
+        // ammo
+        "if 2 "
+            "xv 100 "
+            "anum "
+            "xv 150 "
+            "pic 2 "
+        "endif "
+
+        // armor
+        "if 4 "
+            "xv 200 "
+            "rnum "
+            "xv 250 "
+            "pic 4 "
+        "endif "
+
+        // selected item
+        "if 6 "
+            "xv 296 "
+            "pic 6 "
+        "endif "
+
+        "yb -50 "
+
+        // picked up item
+        "if 7 "
+            "xv 0 "
+            "pic 7 "
+            "xv 26 "
+            "yb -42 "
+            "stat_string 8 "
+            "yb -50 "
+        "endif "
+
+        //  help / weapon icon
+        "if 11 "
+            "xv 148 "
+            "pic 11 "
+        "endif "
+
+        // picked up item
+        "if 7 "
+            "xv 0 "
+            "pic 7 "
+            "xv 26 "
+            "yb -42 "
+            "stat_string 8 "
+            "yb -50 "
+        "endif "
+
+        // timer (quad, armor, rebreather, envirosuit)
+        "if 9 "
+            "xv 276 "
+            "num 2 10 "
+            "xv 310 "
+            "pic 9 "
+        "endif "
+
+        //  help / weapon icon
+        "if 11 "
+            "xv 148 "
+            "pic 11 "
+        "endif "
+
+        // timer (pent/weapon)
+        "if 30 "
+            "yb -80 "
+            "xv 276 "
+            "num 2 30 "
+            "xv 310 "
+            "pic 29 "
+        "endif "
+
+        // frags
+        "if 14 "
+            "xr	-50 "
+            "yt 2 "
+            "num 3 14 "
+        "endif "
+
+        // player id view
+        "if 27 "
+            "xv %d "
+            "yb %d "
+            "stat_string 27 "
+        "endif "
+
+        // vote notice
+        "if 28 "
+            "xl 10 "
+            "yb -180 "
+            "stat_string 28 "
+        "endif",
+        (int)strlen(teaminfo[TEAM_A].name) * 8, teaminfo[TEAM_A].name,
+        (int)strlen(teaminfo[TEAM_B].name) * 8, teaminfo[TEAM_B].name,
+        id_x, id_y
+    );
+
+    return spec_statusbar;
+}
+
 /*
 ==============
 TDM_CreatePlayerDmStatusBar
 ==============
 Create player's own customized dm_statusbar.
 */
-const char *TDM_CreatePlayerDmStatusBar (playerconfig_t *c)
+const char *TDM_CreatePlayerDmStatusBar (edict_t *player)
 {
-	const char	*dm_statusbar;
-	int			id_x, id_y;
+    char *dm_statusbar;
+    char weaponhud[1400];   // the weapon icons
+    char ammohud[1400];     // the ammo counts
+    int id_x, id_y;
+    int hud_x, hud_y;
 
-	// opentdm default
-	id_x = -100;
-	id_y = -80;
+    // opentdm default
+    id_x = -100;
+    id_y = -80;
+    hud_y = 0;
+    hud_x = -25;
 
-	if (c) {
-		id_x += c->id_x;
-		id_y += c->id_y;
-	}
+    memset(&weaponhud, 0, sizeof(weaponhud));
+    memset(&ammohud, 0, sizeof(ammohud));
 
-	dm_statusbar = va (
-"yb -24 "
+    if (SHOWWEAPONHUD(player)) {
 
-// health
-"xv 0 "
-"hnum "
-"xv 50 "
-"pic 0 "
+        id_x += player->client->pers.config.id_x;
+        id_y += player->client->pers.config.id_y;
 
-// ammo
-"if 2 "
-  "xv 100 "
-  "anum "
-  "xv 150 "
-  "pic 2 "
-"endif "
+        hud_x += player->client->pers.weaponhud_offset_x;
+        hud_y += player->client->pers.weaponhud_offset_y;
 
-// armor
-"if 4 "
-  "xv 200 "
-  "rnum "
-  "xv 250 "
-  "pic 4 "
-"endif "
+        // set x position at first for all weapon icons, to save the chars since CS max is 1000
+        strcpy(weaponhud, va("xr %d ", hud_x));
 
-// selected item
-"if 6 "
-  "xv 296 "
-  "pic 6 "
-"endif "
+        // set x position for ammo quantities ^
+        strcpy(ammohud, va("xr %d ", hud_x - 50));
 
-"yb -50 "
+        // super/shotgun
+        if (player->client->inventory[ITEM_WEAPON_SUPERSHOTGUN]) {
+            strcat(weaponhud, va("yv %d picn w_sshotgun ", hud_y));
+            strcat(ammohud, va("yv %d num 3 %d ", hud_y, STAT_WEAPHUD_SHELLS));
+            hud_y += 25;
+        } else if (player->client->inventory[ITEM_WEAPON_SHOTGUN]) {
+            strcat(weaponhud, va("yv %d picn w_shotgun ", hud_y));
+            strcat(ammohud, va("yv %d num 3 %d ", hud_y, STAT_WEAPHUD_SHELLS));
+            hud_y += 25;
+        }
 
-// picked up item
-"if 7 "
-  "xv 0 "
-  "pic 7 "
-  "xv 26 "
-  "yb -42 "
-  "stat_string 8 "
-  "yb -50 "
-"endif "
+        // chaingun/machinegun
+        if (player->client->inventory[ITEM_WEAPON_CHAINGUN]) {
+            strcat(weaponhud, va("yv %d picn w_chaingun ", hud_y));
+            strcat(ammohud, va("yv %d num 3 %d ", hud_y, STAT_WEAPHUD_BULLETS));
+            hud_y += 25;
+        } else if (player->client->inventory[ITEM_WEAPON_MACHINEGUN]) {
+            strcat(weaponhud, va("yv %d picn w_machinegun ", hud_y));
+            strcat(ammohud, va("yv %d num 3 %d ", hud_y, STAT_WEAPHUD_BULLETS));
+            hud_y += 25;
+        }
 
-// timer (quad, rebreather, envirosuit)
-"if 9 "
-  "xv 246 "
-  "num 2 10 "
-  "xv 296 "
-  "pic 9 "
-"endif "
+        // hand grenades/launcher
+        if (player->client->inventory[ITEM_WEAPON_GRENADELAUNCHER]) {
+            strcat(weaponhud, va("yv %d picn w_glauncher ", hud_y));
+            strcat(ammohud, va("yv %d num 3 %d ", hud_y, STAT_WEAPHUD_GRENADES));
+            hud_y += 25;
+        } else if (player->client->inventory[ITEM_AMMO_GRENADES]) {
+            //strcat(weaponhud, va("yv %d picn w_hgrenade ", hud_y));
+            strcat(weaponhud, va("yv %d picn a_grenades ", hud_y));
+            strcat(ammohud, va("yv %d num 3 %d ", hud_y, STAT_WEAPHUD_GRENADES));
+            hud_y += 25;
+        }
 
-// help / weapon icon
-"if 11 "
-  "xv 148 "
-  "pic 11 "
-"endif "
+        // hyper blaster
+        if (player->client->inventory[ITEM_WEAPON_HYPERBLASTER]) {
+            strcat(weaponhud, va("yv %d picn w_hyperblaster ", hud_y));
+            strcat(ammohud, va("yv %d num 3 %d ", hud_y, STAT_WEAPHUD_CELLS));
+            hud_y += 25;
+        }
 
-// timer (pent)
-"if 29 "
-  "yb -80 "
-  "xv 246 "
-  "num 2 30 "
-  "xv 296 "
-  "pic 29 "
-"endif "
+        // rocket launcher
+        if (player->client->inventory[ITEM_WEAPON_ROCKETLAUNCHER]) {
+            strcat(weaponhud, va("yv %d picn w_rlauncher ", hud_y));
+            strcat(ammohud, va("yv %d num 3 %d ", hud_y, STAT_WEAPHUD_ROCKETS));
+            hud_y += 25;
+        }
 
-// First team name
-"xr -250 "
-"yb -96 "
-"stat_string 18 "
+        // railgun
+        if (player->client->inventory[ITEM_WEAPON_RAILGUN]) {
+            strcat(weaponhud, va("yv %d picn w_railgun ", hud_y));
+            strcat(ammohud, va("yv %d num 3 %d ", hud_y, STAT_WEAPHUD_SLUGS));
+            hud_y += 25;
+        }
 
-// First team score / status
-"xr -66 "
-"yb -120 "
-"num 4 23 "
+        // BFG
+        if (player->client->inventory[ITEM_WEAPON_BFG]) {
+            strcat(weaponhud, va("yv %d picn w_bfg ", hud_y));
+            strcat(ammohud, va("yv %d num 3 %d ", hud_y, STAT_WEAPHUD_CELLS));
+            hud_y += 25;
+        }
+    }
 
-// Second team name
-"xr -250 "
-"yb -48 "
-"stat_string 19 "
+    dm_statusbar = va(
+        // bottom row
+        "yb -24 "
 
-// Second team score / status
-"xr -66 "
-"yb -72 "
-"num 4 24 "
+        // health
+        "xv 0 "
+        "hnum "
+        "xv 50 "
+        "pic 0 "
 
-// Time
-"xv 175 "
-"yb -48 "
-"stat_string 26 "
+        // ammo
+        "if 2 "
+            "xv 100 "
+            "anum "
+            "xv 150 "
+            "pic 2 "
+        "endif "
 
-// Time value
-"xv 175 "
-"yb -39 "
-"stat_string 22 "
+        // armor
+        "if 4 "
+            "xv 200 "
+            "rnum "
+            "xv 250 "
+            "pic 4 "
+        "endif "
 
-// Timeout message
-"if 25 "
-  "xr -58 "
-  "yt 50 "
-  "string Timeout "
+        // next row up
+        "yb -50 "
 
-  // Timeout value
-  "xr -42 "
-  "yt 58 "
-  "stat_string 25 "
-"endif "
+        // picked up item
+        "if 7 "
+            "xv 0 "
+            "pic 7 "
+            "xv 26 "
+            "yb -42 "
+            "stat_string 8 "
+            "yb -50 "
+        "endif "
 
-// frags
-"xr -50 "
-"yt 2 "
-"num 3 31 "
+        // timer (quad, armor, rebreather, envirosuit)
+        "if 9 "
+            "xv 276 "
+            "num 2 10 "
+            "xv 310 "
+            "pic 9 "
+        "endif "
 
-// spectator
-"if 17 "
-  "xv 0 "
-  "yb -58 "
-  "string2 \"SPECTATOR MODE\" "
-"endif "
+        //  help / weapon icon
+        "if 11 "
+            "xv 148 "
+            "pic 11 "
+        "endif "
 
-// chase camera
-"if 16 "
-  "xv 0 "
-  "yb -68 "
-  "string Chasing "
-  "xv 64 "
-  "stat_string 16 "
-"endif "
+        // timer (pent, weapon)
+        "if 30 "
+            "yb -80 "
+            "xv 276 "
+            "num 2 30 "
+            "xv 310 "
+            "pic 29 "
+        "endif "
 
-// player id view
-"if 27 "
-  "xv %d "
-  "yb %d "
-  "stat_string 27 "
-"endif "
+        // Match Status
+        "xv 205 "
+        "yb -48 "
+        "stat_string 26 "
 
-// vote notice
-"if 28 "
-  "xl 10 "
-  "yb -180 "
-  "stat_string 28 "
-"endif ", id_x, id_y);
+        // Time value
+        "yb -39 "
+        "stat_string 31 "
 
-	return dm_statusbar;
+        // First team name
+        "xr -%d "
+        "yb -96 "
+        "string \"%s\" "
+
+        // Second team name
+        "xr -%d "
+        "yb -48 "
+        "string \"%s\" "
+
+        // First team score / status
+        "xr -66 "
+        "yb -120 "
+        "num 4 23 "
+
+        // Second team score / status
+        "yb -72 "
+        "num 4 24 "
+
+        // Timeout message
+        "if 25 "
+            "xr -58 "
+            "yt 40 "
+            "string \"Timeout\" "
+
+            // Timeout value
+            "xr -42 "
+            "yt 48 "
+            "stat_string 25 "
+        "endif "
+
+        //  frags
+        "xr -50 "
+        "yt 2 "
+        "num 3 14 "
+
+        // player id view
+        "if 27 "
+            "xv %d "
+            "yb %d "
+            "stat_string 27 "
+        "endif "
+
+        // vote notice
+        "if 28 "
+            "xl 10 "
+            "yb -180 "
+            "stat_string 28 "
+        "endif "
+
+        "%s%s",
+        (int)strlen(teaminfo[TEAM_A].name) * 8, teaminfo[TEAM_A].name,
+        (int)strlen(teaminfo[TEAM_B].name) * 8, teaminfo[TEAM_B].name,
+        id_x, id_y,
+        weaponhud, ammohud
+    );
+
+    return dm_statusbar;
 }
 
 /*
 ==============
-TDM_SendStatusBarCS
+TDM_SendPlayerStatusBar
 ==============
 Send status bar config string.
 */
-void TDM_SendStatusBarCS (edict_t *ent)
+void TDM_SendPlayerStatusBar(edict_t *ent)
 {
-	gi.WriteByte (svc_configstring);
-	gi.WriteShort (CS_STATUSBAR);
-	gi.WriteString (TDM_CreatePlayerDmStatusBar (&ent->client->pers.config));
-	gi.unicast (ent, true);
+	gi.WriteByte(SVC_CONFIGSTRING);
+	gi.WriteShort(CS_STATUSBAR);
+	gi.WriteString(TDM_CreatePlayerDmStatusBar(ent));
+	gi.unicast(ent, true);
+}
+
+void TDM_SendSpectatorStatusBar(edict_t *ent)
+{
+	gi.WriteByte(SVC_CONFIGSTRING);
+	gi.WriteShort(CS_STATUSBAR);
+	gi.WriteString(TDM_CreateSpectatorStatusBar(ent));
+	gi.unicast(ent, true);
 }
 
 qboolean TDM_ParsePlayerConfigLine (char *line, int line_number, void *param)
@@ -776,11 +1035,56 @@ qboolean TDM_ParsePlayerConfigLine (char *line, int line_number, void *param)
 		c->id_x = atoi (p);
 	else if (!strcmp (variable, "id_y"))
 		c->id_y = atoi (p);
+	else if (!strcmp(variable, "weapon_hud"))
+		c->weapon_hud = atoi(p);
+	else if (!strcmp(variable, "weapon_hud_x"))
+		c->weapon_hud_x = atoi(p);
+	else if (!strcmp(variable, "weapon_hud_y"))
+		c->weapon_hud_y = atoi(p);
+	else if (!strcmp(variable, "armor_timer"))
+		c->armor_timer = atoi(p);
+	else if (!strcmp(variable, "armor_mask"))
+		c->armor_mask = atoi(p);
+	else if (!strcmp(variable, "weapon_timer"))
+		c->weapon_timer = atoi(p);
+	else if (!strcmp(variable, "weapon_mask"))
+		c->weapon_mask = atoi(p);
 	else
 		gi.dprintf ("Unknown player config variable '%s'. Check you are using the latest version of OpenTDM.\n", variable);
 
 	return true;
 }
+
+/**
+ * Some playerconfig values need to be copied to client_persistent_t
+ */
+void TDM_MergePlayerConfig(edict_t *ent)
+{
+	playerconfig_t *c;
+	client_persistent_t *p;
+
+	if (!ent->client) {
+		return;
+	}
+
+	p = &ent->client->pers;
+	c = &p->config;
+
+	p->weaponhud_offset_x = c->weapon_hud_x;
+	p->weaponhud_offset_y = c->weapon_hud_y;
+	p->weapon_mask = c->weapon_mask;
+	p->weapon_timer = c->weapon_timer;
+	p->armor_mask = c->armor_mask;
+	p->armor_timer = c->armor_timer;
+	if (c->weapon_hud) {
+		p->weaponhud = true;
+	} else {
+		p->weaponhud = false;
+	}
+
+	gi.cprintf(ent, PRINT_HIGH, "Remote config merged into playerstate\n");
+}
+
 
 void TDM_PlayerConfigDownloaded (tdm_download_t *download, int code, byte *buff, int len)
 {
@@ -802,8 +1106,9 @@ void TDM_PlayerConfigDownloaded (tdm_download_t *download, int code, byte *buff,
 		{
 			config.loaded = true;
 			download->initiator->client->pers.config = config;
-			gi.cprintf (download->initiator, PRINT_HIGH, "Your opentdm.net player config was loaded successfully.\n");
+			gi.cprintf (download->initiator, PRINT_HIGH, "Your opentdm.org player config was loaded successfully.\n");
 			TDM_SetTeamSkins (download->initiator, NULL);
+			TDM_MergePlayerConfig(download->initiator);
 		}
 	}
 	else
@@ -817,7 +1122,7 @@ void TDM_PlayerConfigDownloaded (tdm_download_t *download, int code, byte *buff,
 	}
 
 	//wision: set up the dm_statusbar according the config and send it to the client
-	TDM_SendStatusBarCS (download->initiator);
+	TDM_UpdateHud(download->initiator, true);
 
 	download->inuse = false;
 }
@@ -832,6 +1137,9 @@ void TDM_DownloadPlayerConfig (edict_t *ent)
 {
 	const char	*stats_id;
 
+	if ((int) g_playerconfig_enabled->value == 0)
+		return;
+
 	if (ent->client->pers.config.loaded)
 		return;
 
@@ -839,7 +1147,7 @@ void TDM_DownloadPlayerConfig (edict_t *ent)
 	if (!stats_id[0])
 	{
 		//FIXME: is this necessary with the global CS back in place?
-		TDM_SendStatusBarCS (ent);
+		TDM_UpdateHud(ent, false);
 		return;
 	}
 
@@ -850,7 +1158,7 @@ void TDM_DownloadPlayerConfig (edict_t *ent)
 		return;
 	}
 
-	Com_sprintf (ent->client->pers.download.path , sizeof(ent->client->pers.download.path ), "playerconfigs/%s", stats_id);
+	Com_sprintf (ent->client->pers.download.path , sizeof(ent->client->pers.download.path ), "%s", stats_id);
 	ent->client->pers.download.initiator = ent;
 	ent->client->pers.download.type = DL_PLAYER_CONFIG;
 	Q_strncpy (ent->client->pers.download.name, stats_id, sizeof(ent->client->pers.download.name)-1);
@@ -886,7 +1194,7 @@ qboolean TDM_SetupClient (edict_t *ent)
 		else
 		{
 			TDM_ShowTeamMenu (ent);
-			gi.cprintf (ent, PRINT_CHAT, "\nWelcome to OpenTDM, an open source OSP/Battle replacement. Please report any bugs at www.opentdm.net. Type 'commands' in the console for a brief command guide.\n\n");
+			gi.cprintf (ent, PRINT_CHAT, "\nWelcome to OpenTDM!\nType 'commands' in the console for a brief command guide.\n\n");
 		}
 	}
 	else
@@ -1249,11 +1557,53 @@ int TDM_GetPlayerIdView (edict_t *ent)
 				string = va ("%16s", target->client->pers.netname);
 		}
 
-		gi.WriteByte (svc_configstring);
+		gi.WriteByte (SVC_CONFIGSTRING);
 		gi.WriteShort (CS_TDM_ID_VIEW);
 		gi.WriteString (string);
 		gi.unicast (ent, false);
 	}
 
 	return target - g_edicts;
+}
+
+/**
+ * Resend the entire statusbar string to update the hud.
+ *
+ */
+void TDM_UpdateHud(edict_t *ent, qboolean force) {
+
+	if (!ent->client)
+		return;
+
+	if (!force) {
+		if (g_weapon_hud->value == 0) {
+			return;
+		}
+
+		if (!ent->client->next_hud_update) {
+			return;
+		}
+
+		// too soon, can only send statusbar at most once every 2 seconds
+		if ((level.framenum - ent->client->last_hud_update) < SECS_TO_FRAMES(2.0F)) {
+			return;
+		}
+
+		// not time yet
+		if (ent->client->next_hud_update > level.framenum) {
+			return;
+		}
+	}
+
+	if (ent->client->pers.mvdclient) {
+		TDM_SendPlayerStatusBar(ent);
+	} else if (ent->client->pers.team == TEAM_SPEC) {
+		TDM_SendSpectatorStatusBar(ent);
+	} else if (ent->client->pers.team > TEAM_SPEC) {
+		TDM_SendPlayerStatusBar(ent);
+	}
+
+	// set next update to way in the future so it's basically never automatically updated.
+	ent->client->next_hud_update = 0;
+	ent->client->last_hud_update = level.framenum;
 }
