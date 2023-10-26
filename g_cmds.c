@@ -502,6 +502,41 @@ void Cmd_Drop_f (edict_t *ent)
 	it->drop (ent, it);
 }
 
+/**
+ * Find your nearest teammate and drop ammo for whatever gun
+ * they're holding
+ */
+void Cmd_DropNearestAmmo_f(edict_t *ent)
+{
+    edict_t *player;
+    const gitem_t *weap, *ammo;
+
+    player = TDM_ClosestTeammate(ent);
+
+    if (player == NULL) {
+        return;
+    }
+
+    weap = player->client->weapon;
+
+    if (weap == GETITEM(ITEM_WEAPON_BLASTER)) {
+        gi.cprintf(ent, PRINT_HIGH, "Can't drop blaster ammo\n");
+        return;
+    }
+
+    ammo = (const gitem_t *)(itemlist + weap->ammoindex);
+
+    if (!ent->client->inventory[ITEM_INDEX(ammo)]) {
+        gi.cprintf (ent, PRINT_HIGH, "Out of item: %s\n", ammo->pickup_name);
+        return;
+    }
+
+    if (ammo->drop) {
+        ammo->drop(ent, ammo);
+    } else {
+        gi.cprintf(ent, PRINT_HIGH, "Item is not droppable\n");
+    }
+}
 
 /*
 =================
@@ -951,8 +986,8 @@ void Cmd_Say_f (edict_t *ent, qboolean team, qboolean arg0)
 	if (gi.argc () < 2 && !arg0)
 		return;
 
-	// wision: don't allow spectators to talk during shutup mode
-	if (!ent->client->pers.team && !ent->client->pers.admin && g_chat_mode->value == 2)
+	// don't allow spectators to talk during shutup mode
+	if (!ent->client->pers.team && !ent->client->pers.admin && (int)g_chat_mode->value == 2)
 		return;
 	
 
@@ -1057,6 +1092,17 @@ void Cmd_Say_f (edict_t *ent, qboolean team, qboolean arg0)
 			if (!OnSameTeam(ent, other))
 				continue;
 		}
+
+		// client doesn't want to hear from players
+		if (IGNORING(other, PLAYERS) && ent->client->pers.team && ent != other) {
+			continue;
+		}
+
+		// client doesn't want to hear from specs
+		if (IGNORING(other, SPEC) && !ent->client->pers.team && ent != other) {
+			continue;
+		}
+
 		gi.cprintf(other, PRINT_CHAT, "%s", text);
 	}
 }
@@ -1207,6 +1253,8 @@ void ClientCommand (edict_t *ent)
 		Cmd_Use_f (ent);
 	else if (Q_stricmp (cmd, "drop") == 0)
 		Cmd_Drop_f (ent);
+	else if (Q_stricmp(cmd, "dropnear") == 0)
+	    Cmd_DropNearestAmmo_f(ent);
 	else if (Q_stricmp (cmd, "give") == 0)
 		Cmd_Give_f (ent);
 	else if (Q_stricmp (cmd, "god") == 0)
