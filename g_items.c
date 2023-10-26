@@ -18,6 +18,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 #include "g_local.h"
+#include "g_tdm.h"
 
 
 qboolean	Pickup_Weapon (edict_t *ent, edict_t *other);
@@ -133,6 +134,10 @@ void SetRespawn (edict_t *ent, float delay)
 
 qboolean Pickup_Powerup (edict_t *ent, edict_t *other)
 {
+	int		quantity;
+
+	quantity = other->client->inventory[ITEM_INDEX(ent->item)];
+
 	other->client->inventory[ITEM_INDEX(ent->item)]++;
 
 	if (!(ent->spawnflags & DROPPED_ITEM) )
@@ -439,26 +444,39 @@ qboolean Pickup_Ammo (edict_t *ent, edict_t *other)
 
 	weapon = (ent->item->flags & IT_WEAPON);
 
-	if ( (weapon) && ( (int)dmflags->value & DF_INFINITE_AMMO ) )
+	if ((weapon) && ((int) dmflags->value & DF_INFINITE_AMMO)) {
 		count = 1000;
-	else if (ent->count)
+	} else if (ent->count) {
 		count = ent->count;
-	else
+	} else {
 		count = ent->item->quantity;
+	}
 
 	oldcount = other->client->inventory[ITEM_INDEX(ent->item)];
 
-	if (!Add_Ammo (other, ent->item, count))
+	if (!Add_Ammo (other, ent->item, count)) {
 		return false;
-
-	if (weapon && !oldcount)
-	{
-		if (other->client->weapon != ent->item && other->client->weapon == GETITEM (ITEM_WEAPON_BLASTER))
-			other->client->newweapon = ent->item;
 	}
 
-	if (!(ent->spawnflags & (DROPPED_ITEM | DROPPED_PLAYER_ITEM)))
-		SetRespawn (ent, 30);
+	if (weapon && !oldcount) {
+		if (other->client->weapon != ent->item && other->client->weapon == GETITEM (ITEM_WEAPON_BLASTER)) {
+			other->client->newweapon = ent->item;
+		}
+	}
+
+	if (!(ent->spawnflags & (DROPPED_ITEM | DROPPED_PLAYER_ITEM))) {
+		SetRespawn(ent, g_respawn_ammo->value);
+	}
+
+	// special case, grenades are ammo and their own weapon,
+	// don't update if we already have a grenade launcher
+	if (other->client->pers.weaponhud &&
+			ITEM_INDEX(ent->item) == ITEM_AMMO_GRENADES &&
+			oldcount == 0 &&
+			other->client->inventory[ITEM_WEAPON_GRENADELAUNCHER] == 0) {
+		other->client->next_hud_update = level.framenum + SECS_TO_FRAMES(1);
+	}
+
 	return true;
 }
 
@@ -469,21 +487,30 @@ void Drop_Ammo (edict_t *ent, const gitem_t *item)
 
 	index = ITEM_INDEX(item);
 	dropped = Drop_Item (ent, item);
-	if (ent->client->inventory[index] >= item->quantity)
+	if (ent->client->inventory[index] >= item->quantity) {
 		dropped->count = item->quantity;
-	else
+	} else {
 		dropped->count = ent->client->inventory[index];
+	}
 
 	if (ent->client->weapon && 
-		ent->client->weapon->tag == AMMO_GRENADES &&
-		item->tag == AMMO_GRENADES &&
-		ent->client->inventory[index] - dropped->count <= 0) {
+			ent->client->weapon->tag == AMMO_GRENADES &&
+			item->tag == AMMO_GRENADES &&
+			ent->client->inventory[index] - dropped->count <= 0) {
 		gi.cprintf (ent, PRINT_HIGH, "Can't drop current weapon\n");
 		G_FreeEdict(dropped);
 		return;
 	}
 
 	ent->client->inventory[index] -= dropped->count;
+
+	// special case, grenades are ammo and their own weapon
+	if (index == ITEM_AMMO_GRENADES &&
+			ent->client->inventory[index] == 0 &&
+			ent->client->inventory[ITEM_WEAPON_GRENADELAUNCHER] == 0) {
+		ent->client->next_hud_update = level.framenum + SECS_TO_FRAMES(1);
+	}
+
 	ValidateSelectedItem (ent);
 }
 
@@ -500,7 +527,7 @@ void MegaHealth_think (edict_t *self)
 	}
 
 	if (!(self->spawnflags & DROPPED_ITEM))
-		SetRespawn (self, 20);
+		SetRespawn (self, g_respawn_mega->value);
 	else
 		G_FreeEdict (self);
 }
@@ -531,7 +558,7 @@ qboolean Pickup_Health (edict_t *ent, edict_t *other)
 	else
 	{
 		if (!(ent->spawnflags & DROPPED_ITEM))
-			SetRespawn (ent, 30);
+			SetRespawn (ent, g_respawn_health->value);
 	}
 
 	return true;
@@ -558,12 +585,15 @@ int ArmorIndex (edict_t *ent)
 
 qboolean Pickup_Armor (edict_t *ent, edict_t *other)
 {
-	int				old_armor_index;
-	gitem_armor_t	*oldinfo;
-	gitem_armor_t	*newinfo;
-	int				newcount;
-	float			salvage;
-	int				salvagecount;
+	int             old_armor_index;
+	gitem_armor_t   *oldinfo;
+	gitem_armor_t   *newinfo;
+	int             newcount;
+	float           salvage;
+	int             salvagecount;
+	int             i, index;
+
+	index = ITEM_INDEX(ent->item);
 
 	// get info on new armor
 	newinfo = (gitem_armor_t *)ent->item->info;
@@ -571,66 +601,87 @@ qboolean Pickup_Armor (edict_t *ent, edict_t *other)
 	old_armor_index = ArmorIndex (other);
 
 	// handle armor shards specially
-	if (ent->item->tag == ARMOR_SHARD)
-	{
-		if (!old_armor_index)
+	if (ent->item->tag == ARMOR_SHARD) {
+		if (!old_armor_index) {
 			other->client->inventory[ITEM_ITEM_ARMOR_JACKET] = 2;
-		else
+		} else {
 			other->client->inventory[old_armor_index] += 2;
+		}
 	}
 
 	// if player has no armor, just use it
-	else if (!old_armor_index)
-	{
+	else if (!old_armor_index) {
 		other->client->inventory[ITEM_INDEX(ent->item)] = newinfo->base_count;
 	}
 
 	// use the better armor
-	else
-	{
+	else {
 		// get info on old armor
-		if (old_armor_index == ITEM_ITEM_ARMOR_JACKET)
+		if (old_armor_index == ITEM_ITEM_ARMOR_JACKET) {
 			oldinfo = &jacketarmor_info;
-		else if (old_armor_index == ITEM_ITEM_ARMOR_COMBAT)
+		} else if (old_armor_index == ITEM_ITEM_ARMOR_COMBAT) {
 			oldinfo = &combatarmor_info;
-		else // (old_armor_index == body_armor_index)
+		} else { // (old_armor_index == body_armor_index)
 			oldinfo = &bodyarmor_info;
+		}
 
-		if (newinfo->normal_protection > oldinfo->normal_protection)
-		{
+		if (newinfo->normal_protection > oldinfo->normal_protection) {
 			// calc new armor values
 			salvage = oldinfo->normal_protection / newinfo->normal_protection;
 			salvagecount = salvage * other->client->inventory[old_armor_index];
 			newcount = newinfo->base_count + salvagecount;
-			if (newcount > newinfo->max_count)
+			if (newcount > newinfo->max_count) {
 				newcount = newinfo->max_count;
+			}
 
 			// zero count of old armor so it goes away
 			other->client->inventory[old_armor_index] = 0;
 
 			// change armor to new item with computed value
 			other->client->inventory[ITEM_INDEX(ent->item)] = newcount;
-		}
-		else
-		{
+		} else {
 			// calc new armor values
 			salvage = newinfo->normal_protection / oldinfo->normal_protection;
 			salvagecount = salvage * newinfo->base_count;
 			newcount = other->client->inventory[old_armor_index] + salvagecount;
-			if (newcount > oldinfo->max_count)
+			if (newcount > oldinfo->max_count) {
 				newcount = oldinfo->max_count;
+			}
 
 			// if we're already maxed out then we don't need the new armor
-			if (other->client->inventory[old_armor_index] >= newcount)
+			if (other->client->inventory[old_armor_index] >= newcount) {
 				return false;
+			}
 
 			// update current armor value
 			other->client->inventory[old_armor_index] = newcount;
 		}
 	}
 
-	if (!(ent->spawnflags & DROPPED_ITEM))
-		SetRespawn (ent, 20);
+	if (!(ent->spawnflags & DROPPED_ITEM)) {
+		SetRespawn (ent, g_respawn_armor->value);
+	}
+
+	// set the timer if enabled
+	if (other->client->pers.armor_mask && g_armor_timer->value) {
+		if (index != ARMOR_SHARD) {
+
+			if (other->client->pers.armor_mask) {
+
+				// lookup weapon vote bitmask index to game inventory index
+				for (i=0; i<ARMOR_MAX; i++) {
+					if (index == armorvotes[i].itemindex) {
+						break;
+					}
+				}
+			}
+
+			if (i < ARMOR_MAX && (other->client->pers.armor_mask & armorvotes[i].value)) {
+				other->client->pers.item_timer[TIMER_ARMOR] = level.framenum + SECS_TO_FRAMES(20);
+				other->client->pers.item_timer_icon[TIMER_ARMOR] = gi.imageindex(ent->item->icon);
+			}
+		}
+	}
 
 	return true;
 }
@@ -639,32 +690,32 @@ qboolean Pickup_Armor (edict_t *ent, edict_t *other)
 
 int PowerArmorType (edict_t *ent)
 {
-	if (!ent->client)
+	if (!ent->client) {
 		return POWER_ARMOR_NONE;
+	}
 
-	if (!(ent->flags & FL_POWER_ARMOR))
+	if (!(ent->flags & FL_POWER_ARMOR)) {
 		return POWER_ARMOR_NONE;
+	}
 
-	if (ent->client->inventory[ITEM_ITEM_POWER_SHIELD] > 0)
+	if (ent->client->inventory[ITEM_ITEM_POWER_SHIELD] > 0) {
 		return POWER_ARMOR_SHIELD;
+	}
 
-	if (ent->client->inventory[ITEM_ITEM_POWER_SCREEN] > 0)
+	if (ent->client->inventory[ITEM_ITEM_POWER_SCREEN] > 0) {
 		return POWER_ARMOR_SCREEN;
+	}
 
 	return POWER_ARMOR_NONE;
 }
 
 void Use_PowerArmor (edict_t *ent, const gitem_t *item)
 {
-	if (ent->flags & FL_POWER_ARMOR)
-	{
+	if (ent->flags & FL_POWER_ARMOR) {
 		ent->flags &= ~FL_POWER_ARMOR;
 		gi.sound(ent, CHAN_AUTO, gi.soundindex("misc/power2.wav"), 1, ATTN_NORM, 0);
-	}
-	else
-	{
-		if (!ent->client->inventory[ITEM_AMMO_CELLS])
-		{
+	} else {
+		if (!ent->client->inventory[ITEM_AMMO_CELLS]) {
 			gi.cprintf (ent, PRINT_HIGH, "No cells for power armor.\n");
 			return;
 		}
@@ -681,19 +732,24 @@ qboolean Pickup_PowerArmor (edict_t *ent, edict_t *other)
 
 	other->client->inventory[ITEM_INDEX(ent->item)]++;
 
-	if (!(ent->spawnflags & DROPPED_ITEM) )
+	if (!(ent->spawnflags & DROPPED_ITEM)) {
 		SetRespawn (ent, ent->item->quantity);
+	}
+
 	// auto-use for DM only if we didn't already have one
-	if (!quantity)
+	if (!quantity) {
 		ent->item->use (other, ent->item);
+	}
 
 	return true;
 }
 
 void Drop_PowerArmor (edict_t *ent, const gitem_t *item)
 {
-	if ((ent->flags & FL_POWER_ARMOR) && (ent->client->inventory[ITEM_INDEX(item)] == 1))
+	if ((ent->flags & FL_POWER_ARMOR) && (ent->client->inventory[ITEM_INDEX(item)] == 1)) {
 		Use_PowerArmor (ent, item);
+	}
+
 	Drop_General (ent, item);
 }
 
@@ -708,23 +764,26 @@ void Touch_Item (edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf
 {
 	qboolean	taken;
 
-	if (!other->client)
+	if (!other->client) {
 		return;
+	}
 
-	if (other->health < 1)
+	if (other->health < 1) {
 		return;		// dead people can't pickup
+	}
 
-	if (!ent->item->pickup)
+	if (!ent->item->pickup) {
 		return;		// not a grabbable item?
+	}
 
 	//can't touch items in countdown
-	if (tdm_match_status == MM_COUNTDOWN)
+	if (tdm_match_status == MM_COUNTDOWN) {
 		return;
+	}
 
 	taken = ent->item->pickup(ent, other);
 
-	if (taken)
-	{
+	if (taken) {
 		// flash the screen
 		other->client->bonus_alpha = 0.25f;
 
@@ -736,22 +795,21 @@ void Touch_Item (edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf
 		// change selected item
 
 		// r1: may have been used already (instant powerups)
-		if (ent->item->use && other->client->inventory[ITEM_INDEX(ent->item)])
+		if (ent->item->use && other->client->inventory[ITEM_INDEX(ent->item)]) {
 			other->client->selected_item = other->client->ps.stats[STAT_SELECTED_ITEM] = ITEM_INDEX(ent->item);
-
-		if (ent->item->pickup == Pickup_Health)
-		{
-			if (ent->count == 2)
-				gi.sound(other, CHAN_ITEM, gi.soundindex("items/s_health.wav"), 1, ATTN_NORM, 0);
-			else if (ent->count == 10)
-				gi.sound(other, CHAN_ITEM, gi.soundindex("items/n_health.wav"), 1, ATTN_NORM, 0);
-			else if (ent->count == 25)
-				gi.sound(other, CHAN_ITEM, gi.soundindex("items/l_health.wav"), 1, ATTN_NORM, 0);
-			else // (ent->count == 100)
-				gi.sound(other, CHAN_ITEM, gi.soundindex("items/m_health.wav"), 1, ATTN_NORM, 0);
 		}
-		else if (ent->item->pickup_sound)
-		{
+
+		if (ent->item->pickup == Pickup_Health) {
+			if (ent->count == 2) {
+				gi.sound(other, CHAN_ITEM, gi.soundindex("items/s_health.wav"), 1, ATTN_NORM, 0);
+			} else if (ent->count == 10) {
+				gi.sound(other, CHAN_ITEM, gi.soundindex("items/n_health.wav"), 1, ATTN_NORM, 0);
+			} else if (ent->count == 25) {
+				gi.sound(other, CHAN_ITEM, gi.soundindex("items/l_health.wav"), 1, ATTN_NORM, 0);
+			} else { // (ent->count == 100)
+				gi.sound(other, CHAN_ITEM, gi.soundindex("items/m_health.wav"), 1, ATTN_NORM, 0);
+			}
+		} else if (ent->item->pickup_sound) {
 			gi.sound(other, CHAN_ITEM, gi.soundindex(ent->item->pickup_sound), 1, ATTN_NORM, 0);
 		}
 	}
@@ -762,15 +820,17 @@ void Touch_Item (edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf
 		ent->spawnflags |= ITEM_TARGETS_USED;
 	}
 
-	if (!taken)
+	if (!taken) {
 		return;
+	}
 
 	TDM_ItemGrabbed (ent, other);
 
-	if (ent->flags & FL_RESPAWN)
+	if (ent->flags & FL_RESPAWN) {
 		ent->flags &= ~FL_RESPAWN;
-	else
+	} else {
 		G_FreeEdict (ent);
+	}
 }
 
 //======================================================================
@@ -871,9 +931,12 @@ void droptofloor (edict_t *ent)
 {
 	trace_t		tr;
 	vec3_t		dest;
+	float		*v;
 
-	VectorSet (ent->mins, -15, -15, -15);
-	VectorSet (ent->maxs, 15, 15, 15);
+	v = tv(-15,-15,-15);
+	VectorCopy (v, ent->mins);
+	v = tv(15,15,15);
+	VectorCopy (v, ent->maxs);
 
 	if (ent->model)
 		gi.setmodel (ent, ent->model);
@@ -883,8 +946,8 @@ void droptofloor (edict_t *ent)
 	ent->movetype = MOVETYPE_TOSS;  
 	ent->touch = Touch_Item;
 
-	VectorCopy (ent->s.origin, dest);
-	dest[2] -= 128;
+	v = tv(0,0,-128);
+	VectorAdd (ent->s.origin, v, dest);
 
 	tr = gi.trace (ent->s.origin, ent->mins, ent->maxs, dest, ent, MASK_SOLID);
 	if (tr.startsolid)
@@ -1031,7 +1094,7 @@ void SpawnItem (edict_t *ent, const gitem_t *item)
 
 //======================================================================
 
-const gitem_t	itemlist[] = 
+gitem_t	itemlist[] =
 {
 	{
 		NULL
@@ -1308,7 +1371,7 @@ always owned, never in the world
 		WEAP_CHAINGUN,
 		NULL,
 		0,
-/* precache */ "weapons/chngnu1a.wav weapons/chngnl1a.wav weapons/machgf3b.wav weapons/chngnd1a.wav",
+/* precache */ "weapons/chngnu1a.wav weapons/chngnl1a.wav weapons/machgf3b.wav` weapons/chngnd1a.wav",
 		"CG"
 	},
 
@@ -1896,4 +1959,31 @@ void SetItemNames (void)
 	body_armor_index   = ITEM_INDEX(FindItem("Body Armor"));
 	power_screen_index = ITEM_INDEX(FindItem("Power Screen"));
 	power_shield_index = ITEM_INDEX(FindItem("Power Shield"));*/
+}
+
+/**
+ * Yes, these values are already set when itemlist is defined,
+ * but they can be overrode by cvars.
+ */
+void SetPowerupRespawnDelay(void)
+{
+    gitem_t *it;
+
+    it = (gitem_t *) GETITEM(ITEM_ITEM_QUAD);
+    it->quantity = (int) g_respawn_quad->value;
+
+    it = (gitem_t *) GETITEM(ITEM_ITEM_INVULNERABILITY);
+    it->quantity = (int) g_respawn_invuln->value;
+
+    it = (gitem_t *) GETITEM(ITEM_ITEM_PACK);
+    it->quantity = (int) g_respawn_backpack->value;
+
+    it = (gitem_t *) GETITEM(ITEM_ITEM_ADRENALINE);
+    it->quantity = (int) g_respawn_adren->value;
+
+    it = (gitem_t *) GETITEM(ITEM_ITEM_POWER_SCREEN);
+    it->quantity = (int) g_respawn_ps->value;
+
+    it = (gitem_t *) GETITEM(ITEM_ITEM_POWER_SHIELD);
+    it->quantity = (int) g_respawn_ps->value;
 }
