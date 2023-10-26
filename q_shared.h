@@ -20,10 +20,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifndef _QSHARED_H
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #include <math.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -123,7 +119,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define filelength _filelength
 #define stricmp _stricmp
 #define putenv _putenv
-#if defined __GNUC__ && !defined _WIN64 && !defined __clang__
+#ifdef __GNUC__
 #define EXPORT __attribute__((callee_pop_aggregate_return(0)))
 #define IMPORT __attribute__((callee_pop_aggregate_return(0)))
 #else
@@ -164,11 +160,7 @@ typedef uint64_t uint64;
 #define Q_strncasecmp strncasecmp
 #define EXPORT
 #define IMPORT
-#ifdef __clang__
-#define DLL_EXPORT __attribute__((visibility("default")))
-#else
 #define DLL_EXPORT __attribute__((visibility("default"), externally_visible))
-#endif
 void Q_strlwr (char *str);
 int Q_vsnprintf (char *buff, size_t len, const char *fmt, va_list va);
 //int Q_snprintf (char *buff, size_t len, const char *fmt, ...);
@@ -209,6 +201,25 @@ uint32 genrand_uniform(uint32 n);
 
 #ifndef NULL
 #define NULL ((void *)0)
+#endif
+
+#ifdef _WIN32
+#define FLOAT2INTCAST(f)(*((int32 *)(&f)))
+#define FLOAT2UINTCAST(f)(*((uint32 *)(&f)))
+#define FLOAT_LT_ZERO(f) (FLOAT2UINTCAST(f) > 0x80000000U)
+#define FLOAT_LE_ZERO(f) (FLOAT2INTCAST(f) <= 0)
+#define FLOAT_GT_ZERO(f) (FLOAT2INTCAST(f) > 0)
+#define FLOAT_GE_ZERO(f) (FLOAT2UINTCAST(f) <= 0x80000000U)
+#define	FLOAT_EQ_ZERO(f) (FLOAT2INTCAST(f) == 0)
+#define	FLOAT_NE_ZERO(f) (FLOAT2INTCAST(f) != 0)
+#else
+//gcc breaks ieee compatibility with -ffast-math? i guess since these break horribly on linux
+#define	FLOAT_LT_ZERO(f) ((f) < 0)
+#define FLOAT_LE_ZERO(f) ((f) <= 0)
+#define FLOAT_GT_ZERO(f) ((f) > 0)
+#define FLOAT_GE_ZERO(f) ((f) >= 0)
+#define	FLOAT_EQ_ZERO(f) ((f) == 0)
+#define	FLOAT_NE_ZERO(f) ((f) != 0)
 #endif
 
 //terminating strncpy
@@ -1341,8 +1352,6 @@ ROGUE - VERSIONS
 #define	ANGLE2SHORT(x)	((int)((x)*182.04444444444444444444444444444f) & 65535)
 #define	SHORT2ANGLE(x)	((x)*(0.0054931640625f))
 
-#define	COORD2SHORT(x)	((int)((x)*8.0f))
-#define	SHORT2COORD(x)	((x)*(1.0f/8))
 
 //
 // config strings are a general means of communication from
@@ -1395,24 +1404,24 @@ typedef enum
 // need to render in some way
 typedef struct entity_state_s
 {
-	int		number;			// edict index
+    int     number;         // edict index
 
-	vec3_t	origin;
-	vec3_t	angles;
-	vec3_t	old_origin;		// for lerping
-	int32		modelindex;
-	int32		modelindex2, modelindex3, modelindex4;	// weapons, CTF flags, etc
-	int32		frame;
-	int32		skinnum;
-	uint32	effects;		// PGM - we're filling it, so it needs to be unsigned
-	int32		renderfx;
-	int32		solid;		// for client side prediction, 8*(bits 0-4) is x/y radius
-							// 8*(bits 5-9) is z down distance, 8(bits10-15) is z up
-							// gi.linkentity sets this properly
-	int32		sound;		// for looping sounds, to guarantee shutoff
-	int32		event;		// impulse events -- muzzle flashes, footsteps, etc
-							// events only go out for a single frame, they
-							// are automatically cleared each frame
+    vec3_t  origin;
+    vec3_t  angles;
+    vec3_t  old_origin;     // for lerping
+    int32   modelindex;
+    int32   modelindex2, modelindex3, modelindex4;	// weapons, CTF flags, etc
+    int32   frame;
+    int32   skinnum;
+    uint32  effects;        // PGM - we're filling it, so it needs to be unsigned
+    int32   renderfx;
+    int32   solid;          // for client side prediction, 8*(bits 0-4) is x/y radius
+                            // 8*(bits 5-9) is z down distance, 8(bits10-15) is z up
+                            // gi.linkentity sets this properly
+    int32   sound;          // for looping sounds, to guarantee shutoff
+    int32   event;          // impulse events -- muzzle flashes, footsteps, etc
+                            // events only go out for a single frame, they
+                            // are automatically cleared each frame
 } entity_state_t;
 
 //==============================================
