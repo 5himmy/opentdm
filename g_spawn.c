@@ -19,6 +19,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #include "g_local.h"
+#include "g_tdm.h"
 
 typedef struct
 {
@@ -404,6 +405,41 @@ const char *ED_ParseEdict (const char *data, edict_t *ent)
 	return data;
 }
 
+// Should this entity be removed based on g_itemflags or g_powerupflags?
+qboolean G_RemovedItem(edict_t *ent)
+{
+	if (!ent->item) {
+		return false;
+	}
+
+	int index, i;
+	index = ITEM_INDEX(ent->item);
+
+	// weapons first
+	for (i = 0; i < (sizeof(weaponvotes) / sizeof(weaponinfo_t)); i++) {
+		if (!((int)g_itemflags->value & weaponvotes[i].value)) {
+			continue;
+		}
+
+		// this weapon has been removed
+		if (index == weaponvotes[i].itemindex) {
+			return true;
+		}
+	}
+
+	// powerups (quad, ps, etc) next
+	for (i = 0; i < sizeof(powerupvotes) / sizeof(powerupinfo_t); i++) {
+		if (!((int)g_powerupflags->value & powerupvotes[i].value)) {
+			continue;
+		}
+
+		if (index == powerupvotes[i].itemindex) {
+			return true;
+		}
+	}
+
+	return false;
+}
 
 /*
 ================
@@ -423,14 +459,25 @@ void G_FindTeams (void)
 
 	c = 0;
 	c2 = 0;
+
 	for (i=1, e=g_edicts+i ; i < globals.num_edicts ; i++,e++)
 	{
-		if (!e->inuse)
+		if (!e->inuse) {
 			continue;
-		if (!e->team)
+		}
+
+		if (!e->team) {
 			continue;
-		if (e->flags & FL_TEAMSLAVE)
+		}
+
+		if (G_RemovedItem(e)) {
+			e->team[0] = '_';
+		}
+
+		if (e->flags & FL_TEAMSLAVE) {
 			continue;
+		}
+
 		chain = e;
 		e->teammaster = e;
 		c++;
@@ -441,9 +488,14 @@ void G_FindTeams (void)
 				continue;
 			if (!e2->team)
 				continue;
+
+			if (G_RemovedItem(e2)) {
+				e2->team[0] = '_';
+			}
+
 			if (e2->flags & FL_TEAMSLAVE)
 				continue;
-			if (!strcmp(e->team, e2->team))
+			if (strcmp(e->team, e2->team) == 0)
 			{
 				c2++;
 				chain->teamchain = e2;
@@ -622,13 +674,15 @@ void SpawnEntities (const char *mapname, const char *entities, const char *spawn
 
 	ParseEntityString (false);
 
+	SetPowerupRespawnDelay();
 	TDM_MapChanged ();
 }
 
 
 //===================================================================
 
-const char *TDM_CreatePlayerDmStatusBar (playerconfig_t *c);
+//const char *TDM_CreateSpectatorStatusBar(edict_t *player);
+const char *TDM_CreatePlayerDmStatusBar(edict_t *player);
 
 /*QUAKED worldspawn (0 0 0) ?
 
@@ -666,7 +720,7 @@ void SP_worldspawn (edict_t *ent)
 		Q_strncpy (level.level_name, ent->message, sizeof(level.level_name)-1);
 	}
 	else
-		strcpy (level.level_name, level.mapname);
+		Q_strncpy (level.level_name, level.mapname, sizeof(level.level_name)-1);
 
 	if (st.sky && st.sky[0])
 		gi.configstring (CS_SKY, st.sky);
@@ -685,8 +739,8 @@ void SP_worldspawn (edict_t *ent)
 	// status bar program
 	// wision: we send this as unicast on every player's connect
 	// r1: but we send it globally too to avoid bugging out gtv/etc
+	//gi.configstring (CS_STATUSBAR, TDM_CreateSpectatorStatusBar(NULL));
 	gi.configstring (CS_STATUSBAR, TDM_CreatePlayerDmStatusBar(NULL));
-
 	//---------------
 
 	// help icon for statusbar
@@ -784,6 +838,8 @@ void SP_worldspawn (edict_t *ent)
 	gi.modelindex ("models/objects/gibs/skull/tris.md2");
 	gi.modelindex ("models/objects/gibs/head2/tris.md2");
 
+	gi.soundindex (g_vote_attention_sound->string);
+
 	//this is to force precache of the opentdm 'invisible player' model so it
 	//is auto downloaded (hopefully!)
 	//gi.modelindex ("players/opentdm/tris.md2");
@@ -836,4 +892,3 @@ void SP_worldspawn (edict_t *ent)
 	// 63 testing
 	gi.configstring(CS_LIGHTS+63, "a");
 }
-
