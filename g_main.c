@@ -19,7 +19,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #include "g_local.h"
-#include "g_tdm_curl.h"
 
 game_locals_t	game;
 level_locals_t	level;
@@ -91,9 +90,20 @@ cvar_t	*g_match_time;
 cvar_t	*g_match_countdown;
 cvar_t	*g_vote_time;
 cvar_t	*g_vote_mask;
+cvar_t	*g_vote_attention;
+cvar_t	*g_vote_attention_sound;
+cvar_t	*g_ready_attention;
 cvar_t	*g_intermission_time;
 cvar_t	*g_force_screenshot;
 cvar_t	*g_force_record;
+cvar_t	*g_record_mvd;
+cvar_t	*g_weapon_hud;
+cvar_t	*g_armor_timer;
+cvar_t	*g_weapon_timer;
+cvar_t	*g_timeout_limit;
+cvar_t  *g_timeout_captain;
+cvar_t  *g_highlight_captain;
+cvar_t  *g_ping_handicap;
 
 cvar_t	*g_tdmflags;
 cvar_t	*g_itdmflags;
@@ -123,11 +133,14 @@ cvar_t	*g_http_debug;
 cvar_t	*g_http_path;
 cvar_t	*g_http_domain;
 
+cvar_t	*g_playerconfig_enabled;
+
 cvar_t	*g_debug_spawns;
 
 cvar_t	*g_max_players_per_team;
 
 cvar_t	*g_maplistfile;
+cvar_t  *g_randommapfile;
 cvar_t	*g_motd_message;
 
 cvar_t	*g_bugs;
@@ -144,6 +157,19 @@ cvar_t	*g_auto_rejoin_map;
 cvar_t	*g_1v1_spawn_mode;
 cvar_t	*g_tdm_spawn_mode;
 
+cvar_t *g_respawn_weapon;
+cvar_t *g_respawn_ammo;
+cvar_t *g_respawn_armor;
+cvar_t *g_respawn_health;
+cvar_t *g_respawn_quad;
+cvar_t *g_respawn_invuln;
+cvar_t *g_respawn_backpack;
+cvar_t *g_respawn_adren;
+cvar_t *g_respawn_ps;
+cvar_t *g_respawn_mega;
+
+cvar_t	*sv_mvd_enable;
+
 void SpawnEntities (const char *mapname, const char *entities, const char *spawnpoint);
 void ClientThink (edict_t *ent, usercmd_t *cmd);
 qboolean ClientConnect (edict_t *ent, char *userinfo);
@@ -156,6 +182,7 @@ void DummyWrite (const char *filename, qboolean autosave);
 void DummyRead (const char *filename);
 void InitGame (void);
 void G_RunFrame (void);
+char *TDM_MakeServerDemoName(void);
 
 
 //===================================================================
@@ -164,8 +191,6 @@ void G_RunFrame (void);
 void ShutdownGame (void)
 {
 	gi.dprintf ("==== ShutdownGame ====\n");
-
-	HTTP_Shutdown();
 
 	gi.cvar_forceset ("g_features", "0");
 
@@ -478,6 +503,20 @@ void G_RunFrame (void)
 	//FIXME: shouldn't we increment framenum after the game has run, in preparation for the next frame?
 	//otherwise usercmds that arrive after we return will still use the old framenum, which seems wrong.
 	//level.realframenum++;
+
+	// see if we need to start/stop a server demo
+	if (g_record_mvd->modified && game.server_features) {
+		g_record_mvd->modified = false;
+
+		if (game.mvd.recording && game.mvd.matches >= (int) g_record_mvd->value) {
+			gi.AddCommandString("mvdstop\n");
+			memset(&game.mvd, 0x0, sizeof(server_demo_t));
+		} else if (!game.mvd.recording && tdm_match_status > MM_WARMUP) {
+			Q_strncpy(game.mvd.filename, TDM_MakeServerDemoName(), sizeof(game.mvd.filename)-1);
+			gi.AddCommandString(va("mvdrecord %s\n", game.mvd.filename));
+			game.mvd.recording = true;
+		}
+	}
 
 	if (tdm_match_status != MM_TIMEOUT)
 	{
