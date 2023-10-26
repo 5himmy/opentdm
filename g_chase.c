@@ -86,6 +86,7 @@ void UpdateChaseCam(edict_t *ent)
 	vec3_t forward, right;
 	trace_t trace;
 	int i;
+	vec3_t oldgoal;
 	vec3_t angles;
 
 	targ = ent->client->chase_target;
@@ -146,6 +147,7 @@ void UpdateChaseCam(edict_t *ent)
 	else if (ent->client->chase_mode == CHASE_THIRDPERSON)
 	{
 		VectorCopy(targ->s.origin, ownerv);
+		VectorCopy(ent->s.origin, oldgoal);
 
 		ownerv[2] += targ->viewheight;
 
@@ -187,9 +189,6 @@ void UpdateChaseCam(edict_t *ent)
 			VectorCopy(trace.endpos, goal);
 			goal[2] += 6;
 		}
-	} else {
-		TDM_Error ("UpdateChaseCam: bad chase_mode");
-		return;
 	}
 
 	VectorCopy(goal, ent->s.origin);
@@ -312,4 +311,3 @@ void GetChaseTarget(edict_t *ent)
 
 	gi.centerprintf(ent, "No other players to chase.");
 }
-
