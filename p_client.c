@@ -797,7 +797,7 @@ edict_t *SelectRandomDeathmatchSpawnPointAvoidingTwoClosest (void)
 	{
 		if (spot1)
 		{
-			gi.WriteByte (svc_temp_entity);
+			gi.WriteByte (SVC_TEMP_ENTITY);
 			gi.WriteByte (TE_DEBUGTRAIL);
 			gi.WritePosition (spot1->s.origin);
 			gi.WritePosition (player1->s.origin);
@@ -806,7 +806,7 @@ edict_t *SelectRandomDeathmatchSpawnPointAvoidingTwoClosest (void)
 
 		if (spot2)
 		{
-			gi.WriteByte (svc_temp_entity);
+			gi.WriteByte (SVC_TEMP_ENTITY);
 			gi.WriteByte (TE_DEBUGTRAIL);
 			gi.WritePosition (spot2->s.origin);
 			gi.WritePosition (player2->s.origin);
@@ -870,7 +870,7 @@ edict_t *SelectRandomDeathmatchSpawnPointAvoidingTwoClosestBugged (void)
 	{
 		if (spot1)
 		{
-			gi.WriteByte (svc_temp_entity);
+			gi.WriteByte (SVC_TEMP_ENTITY);
 			gi.WriteByte (TE_DEBUGTRAIL);
 			gi.WritePosition (spot1->s.origin);
 			gi.WritePosition (player1->s.origin);
@@ -879,7 +879,7 @@ edict_t *SelectRandomDeathmatchSpawnPointAvoidingTwoClosestBugged (void)
 
 		if (spot2)
 		{
-			gi.WriteByte (svc_temp_entity);
+			gi.WriteByte (SVC_TEMP_ENTITY);
 			gi.WriteByte (TE_DEBUGTRAIL);
 			gi.WritePosition (spot2->s.origin);
 			gi.WritePosition (player2->s.origin);
@@ -1063,7 +1063,7 @@ void CopyToBodyQue (edict_t *ent)
 	// send an effect on the removed body
 	if (body->s.modelindex)
 	{
-		gi.WriteByte (svc_temp_entity);
+		gi.WriteByte (SVC_TEMP_ENTITY);
 		gi.WriteByte (TE_BLOOD);
 		gi.WritePosition (body->s.origin);
 		gi.WriteDir (vec3_origin);
@@ -1122,6 +1122,11 @@ void respawn (edict_t *self)
 		self->client->ps.pmove.pm_time = 14;
 	}
 
+	// refresh the statusbar to remove weapons from hud
+	if (self->client->pers.team && self->client->pers.weaponhud) {
+		TDM_UpdateHud(self, true);
+	}
+
 	self->client->respawn_framenum = level.framenum;
 }
 
@@ -1145,7 +1150,7 @@ void PutClientInServer (edict_t *ent)
 	vec3_t	spawn_origin, spawn_angles;
 	gclient_t	*client;
 	int		i;
-	client_persistant_t	saved;
+	client_persistent_t	saved;
 	client_respawn_t	respsaved;
 	qboolean		rejoined;
 
@@ -1164,7 +1169,7 @@ void PutClientInServer (edict_t *ent)
 	//InitClientPersistant (client);
 	//ClientUserinfoChanged (ent, userinfo);
 
-	// clear everything but the persistant data
+	// clear everything but the persistent data
 	saved = client->pers;
 	respsaved = client->resp;
 	memset (client, 0, sizeof(*client));
@@ -1209,8 +1214,9 @@ void PutClientInServer (edict_t *ent)
 	if (ent->client->pers.team)
 		TDM_SetInitialItems (ent);
 
-	for (i=0 ; i<3 ; i++)
-		client->ps.pmove.origin[i] = COORD2SHORT(spawn_origin[i]);
+	client->ps.pmove.origin[0] = spawn_origin[0]*8;
+	client->ps.pmove.origin[1] = spawn_origin[1]*8;
+	client->ps.pmove.origin[2] = spawn_origin[2]*8;
 
 	if ((int)dmflags->value & DF_FIXED_FOV)
 	{
@@ -1362,8 +1368,6 @@ void ClientBeginDeathmatch (edict_t *ent)
 	//even across map changes
 	if (ent->client->pers.joinstate != JS_JOINED)
 	{
-		static unsigned client_counter = 0;
-
 		strcpy (userinfo, ent->client->pers.userinfo);
 		strcpy (saved_ip, ent->client->pers.ip);
 		saved_mvdclient = ent->client->pers.mvdclient;
@@ -1372,23 +1376,39 @@ void ClientBeginDeathmatch (edict_t *ent)
 
 		strcpy (ent->client->pers.ip, saved_ip);
 		ent->client->pers.mvdclient = saved_mvdclient;
-		ClientUserinfoChanged (ent, userinfo);
 
 		client->resp.enterframe = level.framenum;
 		client->pers.connected = true;
 		client->pers.joinstate = JS_FIRST_JOIN;
 
 		//unqiue id for tracking other clients taking this slot
-		client->pers.uniqueid = client_counter++;
+		client->pers.uniqueid = genrand_int32() & 0xffff;
 
-		if (!ent->client->pers.mvdclient)
+		ClientUserinfoChanged (ent, userinfo);
+
+		if (!ent->client->pers.mvdclient) {
 			gi.bprintf (PRINT_HIGH, "%s entered the game\n", ent->client->pers.netname);
+		}
 	}
-	else
-	{
-		//wision: set up the dm_statusbar according the config and send it to the client
-		TDM_SendStatusBarCS (ent);
+
+	if (g_weapon_hud->value >= HUD_DEFAULT) {
+	    ent->client->pers.weaponhud = true;
+        G_StuffCmd(ent, "set uf \"%d\" u\n", ent->client->pers.userflags | UF_WEAPON_HUD);
 	}
+
+	TDM_UpdateHud(ent, true);
+
+	// set timer icons indexes (armor/weapon is set on the fly)
+	client->pers.item_timer_icon[TIMER_QUAD] = gi.imageindex ("p_quad");
+	client->pers.item_timer_icon[TIMER_INVULN] = gi.imageindex ("p_invulnerability");
+	client->pers.item_timer_icon[TIMER_ENVIROSUIT] = gi.imageindex ("p_envirosuit");
+	client->pers.item_timer_icon[TIMER_REBREATHER] = gi.imageindex ("p_rebreather");
+
+	client->pers.timer1.stat_index = STAT_TIMER;
+	client->pers.timer2.stat_index = STAT_TIMER2;
+
+	// should update timers
+	client->pers.next_timer_update = 0;
 
 	//no cross-level menus!
 	PMenu_Close (ent);
@@ -1407,7 +1427,7 @@ void ClientBeginDeathmatch (edict_t *ent)
 		PutClientInServer (ent);
 
 		// send effect (only to local client)
-		gi.WriteByte (svc_muzzleflash);
+		gi.WriteByte (SVC_MUZZLEFLASH);
 		gi.WriteShort (ent-g_edicts);
 		gi.WriteByte (MZ_LOGIN);
 		gi.unicast (ent, false);
@@ -1453,6 +1473,7 @@ void ClientUserinfoChanged (edict_t *ent, char *userinfo)
 	const char		*old_name;
 	const char		*old_stats_id;
 	int				playernum;
+	qboolean		name_changed;
 	qboolean		do_config_download;
 
 	//new connection, server is calling us. just save userinfo for later.
@@ -1489,6 +1510,8 @@ void ClientUserinfoChanged (edict_t *ent, char *userinfo)
 		do_config_download = true;
 	else
 		do_config_download = false;
+
+	name_changed = false;
 
 	old_name = Info_ValueForKey (ent->client->pers.userinfo, "name");
 
@@ -1556,6 +1579,59 @@ void ClientUserinfoChanged (edict_t *ent, char *userinfo)
 	s = Info_ValueForKey (userinfo, "hand");
 	if (s[0])
 		ent->client->pers.hand = atoi(s);
+
+	// user flags
+	s = Info_ValueForKey(userinfo, "uf");
+	if (s[0]) {
+		ent->client->pers.userflags = atoi(s);
+		if (UF(ent, WEAPON_HUD)) {
+			ent->client->pers.weaponhud = true;
+		} else {
+		    if ((int) g_weapon_hud->value != HUD_FORCED) {
+		        ent->client->pers.weaponhud = false;
+		    }
+		}
+	}
+
+	// left/right offset for weapon hud (negative is left)
+	s = Info_ValueForKey(userinfo, "wh.x");
+	if (s[0]) {
+		if (s[0] == '-') {
+			ent->client->pers.weaponhud_offset_x = atoi(s) | 1<<31;
+		} else {
+			ent->client->pers.weaponhud_offset_x = atoi(s);
+		}
+	}
+
+	// up/down offset for weapon hud (negative is up)
+	s = Info_ValueForKey(userinfo, "wh.y");
+	if (s[0]) {
+		if (s[0] == '-') {
+			ent->client->pers.weaponhud_offset_y = atoi(s) | 1<<31;
+		} else {
+			ent->client->pers.weaponhud_offset_y = atoi(s);
+		}
+	}
+
+	// weapon mask for auto timer
+	s = Info_ValueForKey(userinfo, "wmask");
+	if (s[0]) {
+		if (s[0] >= '0' && s[0] <= '9') {
+			ent->client->pers.weapon_mask = atoi(s);
+		} else {
+			ent->client->pers.weapon_mask = TDM_WeaponStringToBitmask(s);
+		}
+	}
+
+	// armor mask for auto timer
+	s = Info_ValueForKey(userinfo, "amask");
+	if (s[0]) {
+		if (s[0] >= '0' && s[0] <= '9') {
+			ent->client->pers.armor_mask = atoi(s);
+		} else {
+			ent->client->pers.armor_mask = TDM_ArmorStringToBitmask(s);
+		}
+	}
 
 	// save off the userinfo in case we want to check something later
 	Q_strncpy (ent->client->pers.userinfo, userinfo, sizeof(ent->client->pers.userinfo)-1);
@@ -1657,7 +1733,7 @@ Will be called between levels on supported servers.
 */
 void ClientDisconnect (edict_t *ent)
 {
-	//int			playernum;
+	int			playernum;
 	qboolean	wasInUse;
 
 	if (!ent->client)
@@ -1666,7 +1742,7 @@ void ClientDisconnect (edict_t *ent)
 	// send effect (only if they were in game)
 	if (ent->client->pers.team && ent->inuse)
 	{
-		gi.WriteByte (svc_muzzleflash);
+		gi.WriteByte (SVC_MUZZLEFLASH);
 		gi.WriteShort (ent-g_edicts);
 		gi.WriteByte (MZ_LOGOUT);
 		gi.multicast (ent->s.origin, MULTICAST_PVS);
@@ -1694,7 +1770,7 @@ void ClientDisconnect (edict_t *ent)
 	if (wasInUse && !ent->client->pers.mvdclient)
 		gi.bprintf (PRINT_HIGH, "%s disconnected\n", ent->client->pers.netname);
 
-	//playernum = ent-g_edicts-1;
+	playernum = ent-g_edicts-1;
 
 	//zero pers in preparation for new client
 	memset (&ent->client->pers, 0, sizeof(ent->client->pers));
@@ -1828,6 +1904,12 @@ void ClientThink (edict_t *ent, usercmd_t *ucmd)
 		return;
 	}
 
+	// lock player in place while vote it active until they vote (based on cvar)
+	if (vote.active && tdm_match_status == MM_WARMUP && (int)g_vote_attention->value >= 3 && client->resp.vote == VOTE_HOLD) {
+		client->ps.pmove.pm_type = PM_FREEZE;
+		return;
+	}
+
 	pm_passent = ent;
 
 	if (ent->client->chase_target)
@@ -1859,8 +1941,8 @@ void ClientThink (edict_t *ent, usercmd_t *ucmd)
 
 		for (i=0 ; i<3 ; i++)
 		{
-			pm.s.origin[i] = COORD2SHORT(ent->s.origin[i]);
-			pm.s.velocity[i] = COORD2SHORT(ent->velocity[i]);
+			pm.s.origin[i] = ent->s.origin[i]*8;
+			pm.s.velocity[i] = ent->velocity[i]*8;
 		}
 
 		if (memcmp(&client->old_pmove, &pm.s, sizeof(pm.s)))
@@ -1877,10 +1959,14 @@ void ClientThink (edict_t *ent, usercmd_t *ucmd)
 		// perform a pmove
 		gi.Pmove (&pm);
 
+		// save results of pmove
+		client->ps.pmove = pm.s;
+		client->old_pmove = pm.s;
+
 		for (i=0 ; i<3 ; i++)
 		{
-			ent->s.origin[i] = SHORT2COORD(pm.s.origin[i]);
-			ent->velocity[i] = SHORT2COORD(pm.s.velocity[i]);
+			ent->s.origin[i] = pm.s.origin[i]*0.125f;
+			ent->velocity[i] = pm.s.velocity[i]*0.125f;
 		}
 
 		VectorCopy (pm.mins, ent->mins);
@@ -1890,12 +1976,10 @@ void ClientThink (edict_t *ent, usercmd_t *ucmd)
 		client->resp.cmd_angles[1] = SHORT2ANGLE(ucmd->angles[1]);
 		client->resp.cmd_angles[2] = SHORT2ANGLE(ucmd->angles[2]);
 
-		if (~client->ps.pmove.pm_flags & pm.s.pm_flags & PMF_JUMP_HELD && pm.waterlevel == 0)
+		if (ent->groundentity && !pm.groundentity && (pm.cmd.upmove >= 10) && (pm.waterlevel == 0))
+		{
 			gi.sound (ent, CHAN_VOICE, soundcache[SND_JUMP1], 1, ATTN_NORM, 0);
-
-		// save results of pmove
-		client->ps.pmove = pm.s;
-		client->old_pmove = pm.s;
+		}
 
 		ent->viewheight = pm.viewheight;
 		ent->waterlevel = pm.waterlevel;
@@ -2058,6 +2142,7 @@ void ClientBeginServerFrame (edict_t *ent)
 		TDM_LeftTeam (ent, false);
 		TDM_TeamsChanged ();
 		respawn (ent);
+		TDM_UpdateHud(ent, true);
 	}
 
 	if (ent->deadflag)
