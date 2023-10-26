@@ -26,7 +26,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifdef HAVE_CURL
 
-#define CURL_DISABLE_DEPRECATION
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#endif
+
 #include <curl/curl.h>
 
 typedef struct dlhandle_s
@@ -34,6 +44,7 @@ typedef struct dlhandle_s
 	CURL			*curl;
 	size_t			fileSize;
 	size_t			position;
+	double			speed;
 	char			filePath[1024];
 	char			URL[2048];
 	char			*tempBuffer;
@@ -46,13 +57,19 @@ typedef struct dlhandle_s
 #define MAX_DOWNLOADS	16
 
 //size limits for configs, must be power of two
-#define MAX_DLSIZE	(1 << 20)	// 1 MiB
-#define MIN_DLSIZE	(1 << 15)	// 32 KiB
+#define MAX_DLSIZE	0x100000	// 1 MiB
+#define MIN_DLSIZE	0x8000		// 32 KiB
 
-static dlhandle_t	downloads[MAX_DOWNLOADS];
+dlhandle_t	downloads[MAX_DOWNLOADS];
 
-static CURLM		*multi;
-static int			handleCount;
+static CURLM				*multi = NULL;
+static unsigned				handleCount = 0;
+
+static char					otdm_api_ip[16];
+static char					hostHeader[64];
+static struct curl_slist	*http_header_slist;
+
+static time_t				last_dns_lookup;
 
 /*
 ===============
@@ -74,7 +91,12 @@ static void HTTP_EscapePath (const char *filePath, char *escaped)
 	len = strlen (filePath);
 	for (i = 0; i < len; i++)
 	{
-		if (!isalnum (filePath[i]) && !strchr ("/-_.~", filePath[i]))
+		if (!isalnum (filePath[i]) && filePath[i] != ';' && filePath[i] != '/' &&
+			filePath[i] != '?' && filePath[i] != ':' && filePath[i] != '@' && filePath[i] != '&' &&
+			filePath[i] != '=' && filePath[i] != '+' && filePath[i] != '$' && filePath[i] != ',' &&
+			filePath[i] != '[' && filePath[i] != ']' && filePath[i] != '-' && filePath[i] != '_' &&
+			filePath[i] != '.' && filePath[i] != '!' && filePath[i] != '~' && filePath[i] != '*' &&
+			filePath[i] != '\'' && filePath[i] != '(' && filePath[i] != ')')
 		{
 			sprintf (p, "%%%02x", filePath[i]);
 			p += 3;
@@ -112,7 +134,7 @@ static size_t EXPORT HTTP_Recv (void *ptr, size_t size, size_t nmemb, void *stre
 
 	dl = (dlhandle_t *)stream;
 
-	if (!size || !nmemb)
+	if (!nmemb)
 		return 0;
 
 	if (size > SIZE_MAX / nmemb)
@@ -151,12 +173,54 @@ oversize:
 	return 0;
 }
 
-static int EXPORT CURL_Debug (CURL *c, curl_infotype type, char *data, size_t size, void *ptr)
+int EXPORT CURL_Debug (CURL *c, curl_infotype type, char *data, size_t size, void * ptr)
 {
 	if (type == CURLINFO_TEXT)
-		gi.dprintf ("  OpenTDM HTTP DEBUG: %s", data);
+	{
+		char	buff[4096];
+		if (size > sizeof(buff)-1)
+			size = sizeof(buff)-1;
+		Q_strncpy (buff, data, size);
+		gi.dprintf ("  OpenTDM HTTP DEBUG: %s", buff);
+		if (!strchr (buff, '\n'))
+			gi.dprintf ("\n");
+	}
 
 	return 0;
+}
+
+/*
+===============
+HTTP_ResolveOTDMServer
+
+Resolve the g_http_domain and cache it, so we don't do DNS
+lookups at critical times (eg mid match).
+===============
+*/
+void HTTP_ResolveOTDMServer (void)
+{
+	if (!g_http_enabled->value)
+		return;
+
+	//re-resolve if its been more than one day since we last did it
+	if (time(NULL) - last_dns_lookup > 86400)
+	{
+		gi.cprintf(NULL, PRINT_HIGH, "Resolving API server %s -> ", g_http_domain->string);
+		struct hostent	*h;
+		h = gethostbyname (g_http_domain->string);
+
+		if (!h)
+		{
+			otdm_api_ip[0] = '\0';
+			gi.dprintf ("WARNING: Could not resolve OpenTDM web API server '%s'. HTTP functions unavailable.\n", g_http_domain->string);
+			return;
+		}
+
+		time (&last_dns_lookup);
+
+		Q_strncpy (otdm_api_ip, inet_ntoa (*(struct in_addr *)h->h_addr_list[0]), sizeof(otdm_api_ip)-1);
+		gi.cprintf(NULL, PRINT_HIGH, "%s\n", otdm_api_ip);
+	}
 }
 
 /*
@@ -167,7 +231,7 @@ Actually starts a download by adding it to the curl multi
 handle.
 ===============
 */
-static qboolean HTTP_StartDownload (dlhandle_t *dl)
+void HTTP_StartDownload (dlhandle_t *dl)
 {
 	cvar_t				*hostname;
 	char				escapedFilePath[1024*3];
@@ -177,32 +241,32 @@ static qboolean HTTP_StartDownload (dlhandle_t *dl)
 		TDM_Error ("HTTP_StartDownload: Couldn't get hostname cvar");
 
 	dl->tempBuffer = NULL;
+	dl->speed = 0;
 	dl->fileSize = 0;
 	dl->position = 0;
 
 	if (!dl->curl)
 		dl->curl = curl_easy_init ();
-	if (!dl->curl)
-		return false;
 
 	HTTP_EscapePath (dl->filePath, escapedFilePath);
 
-	Com_sprintf (dl->URL, sizeof(dl->URL), "http://%s%s%s", g_http_domain->string, g_http_path->string, escapedFilePath);
+	Com_sprintf (dl->URL, sizeof(dl->URL), "http://%s%s%s", otdm_api_ip, g_http_path->string, escapedFilePath);
 
-	curl_easy_setopt (dl->curl, CURLOPT_ACCEPT_ENCODING, "");
+	curl_easy_setopt (dl->curl, CURLOPT_HTTPHEADER, http_header_slist);	
+	curl_easy_setopt (dl->curl, CURLOPT_ENCODING, "");
 
 	if (g_http_debug->value)
 	{
 		curl_easy_setopt (dl->curl, CURLOPT_DEBUGFUNCTION, CURL_Debug);
-		curl_easy_setopt (dl->curl, CURLOPT_VERBOSE, 1L);
+		curl_easy_setopt (dl->curl, CURLOPT_VERBOSE, 1);
 	}
 	else
 	{
 		curl_easy_setopt (dl->curl, CURLOPT_DEBUGFUNCTION, NULL);
-		curl_easy_setopt (dl->curl, CURLOPT_VERBOSE, 0L);
+		curl_easy_setopt (dl->curl, CURLOPT_VERBOSE, 0);
 	}
 
-	curl_easy_setopt (dl->curl, CURLOPT_NOPROGRESS, 1L);
+	curl_easy_setopt (dl->curl, CURLOPT_NOPROGRESS, 1);
 	curl_easy_setopt (dl->curl, CURLOPT_WRITEDATA, dl);
 	if (g_http_bind->string[0])
 		curl_easy_setopt (dl->curl, CURLOPT_INTERFACE, g_http_bind->string);
@@ -215,23 +279,19 @@ static qboolean HTTP_StartDownload (dlhandle_t *dl)
 		curl_easy_setopt (dl->curl, CURLOPT_PROXY, g_http_proxy->string);
 	else
 		curl_easy_setopt (dl->curl, CURLOPT_PROXY, NULL);
-	curl_easy_setopt (dl->curl, CURLOPT_FOLLOWLOCATION, 1L);
-	curl_easy_setopt (dl->curl, CURLOPT_MAXREDIRS, 5L);
+	curl_easy_setopt (dl->curl, CURLOPT_FOLLOWLOCATION, 1);
+	curl_easy_setopt (dl->curl, CURLOPT_MAXREDIRS, 5);
 	curl_easy_setopt (dl->curl, CURLOPT_USERAGENT, "OpenTDM (" OPENTDM_VERSION ")");
 	curl_easy_setopt (dl->curl, CURLOPT_REFERER, hostname->string);
 	curl_easy_setopt (dl->curl, CURLOPT_URL, dl->URL);
-	curl_easy_setopt (dl->curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS | 0L);
-	curl_easy_setopt (dl->curl, CURLOPT_PRIVATE, dl);
 
 	if (curl_multi_add_handle (multi, dl->curl) != CURLM_OK)
 	{
 		gi.dprintf ("HTTP_StartDownload: curl_multi_add_handle: error\n");
-		return false;
+		return;
 	}
 
-	dl->inuse = true;
 	handleCount++;
-	return true;
 }
 
 /*
@@ -243,34 +303,24 @@ Init libcurl.
 */
 void HTTP_Init (void)
 {
-	if (curl_global_init (CURL_GLOBAL_NOTHING))
-		gi.error ("curl_global_init failed");
-
+	curl_global_init (CURL_GLOBAL_NOTHING);
 	multi = curl_multi_init ();
-	if (!multi)
-		gi.error ("curl_multi_init failed");
+
+	Com_sprintf (hostHeader, sizeof(hostHeader), "Host: %s", g_http_domain->string);
+	http_header_slist = curl_slist_append (http_header_slist, hostHeader);
 
 	gi.dprintf ("%s initialized.\n", curl_version());
 }
 
 void HTTP_Shutdown (void)
 {
-	int		i;
-
 	if (multi)
 	{
 		curl_multi_cleanup (multi);
 		multi = NULL;
 	}
 
-	for (i = 0; i < MAX_DOWNLOADS; i++)
-	{
-		if (downloads[i].curl)
-			curl_easy_cleanup(downloads[i].curl);
-	}
-
-	memset(downloads, 0, sizeof(downloads));
-	handleCount = 0;
+	curl_slist_free_all (http_header_slist);
 
 	curl_global_cleanup ();
 }
@@ -293,6 +343,7 @@ static void HTTP_FinishDownload (void)
 	long		responseCode;
 	double		timeTaken;
 	double		fileSize;
+	unsigned	i;
 
 	do
 	{
@@ -311,7 +362,17 @@ static void HTTP_FinishDownload (void)
 		}
 
 		curl = msg->easy_handle;
-		curl_easy_getinfo(curl, CURLINFO_PRIVATE, &dl);
+
+		for (i = 0; i < MAX_DOWNLOADS; i++)
+		{
+			if (downloads[i].curl == curl)
+				break;
+		}
+
+		if (i == MAX_DOWNLOADS)
+			TDM_Error ("HTTP_FinishDownload: Handle not found!");
+
+		dl = &downloads[i];
 
 		result = msg->data.result;
 
@@ -320,26 +381,26 @@ static void HTTP_FinishDownload (void)
 			//for some reason curl returns CURLE_OK for a 404...
 			case CURLE_HTTP_RETURNED_ERROR:
 			case CURLE_OK:
+			
 				curl_easy_getinfo (curl, CURLINFO_RESPONSE_CODE, &responseCode);
 				if (responseCode == 404)
 				{
 					TDM_HandleDownload (dl->tdm_handle, NULL, 0, responseCode);
 					gi.dprintf ("HTTP: %s: 404 File Not Found\n", dl->URL);
+					curl_multi_remove_handle (multi, dl->curl);
+					dl->inuse = false;
+					continue;
 				}
 				else if (responseCode == 200)
 				{
 					TDM_HandleDownload (dl->tdm_handle, dl->tempBuffer, dl->position, responseCode);
-
-					//show some stats
-					curl_easy_getinfo (curl, CURLINFO_TOTAL_TIME, &timeTaken);
-					curl_easy_getinfo (curl, CURLINFO_SIZE_DOWNLOAD, &fileSize);
-
-					gi.dprintf ("HTTP: Finished %s: %.f bytes, %.2fkB/sec\n", dl->URL, fileSize, (fileSize / 1024.0) / timeTaken);
+					gi.TagFree (dl->tempBuffer);
 				}
 				else
 				{
 					TDM_HandleDownload (dl->tdm_handle, NULL, 0, responseCode);
-					gi.dprintf ("HTTP Error: %s: response code %ld\n", dl->URL, responseCode);
+					if (dl->tempBuffer)
+						gi.TagFree (dl->tempBuffer);
 				}
 				break;
 
@@ -347,23 +408,38 @@ static void HTTP_FinishDownload (void)
 			default:
 				TDM_HandleDownload (dl->tdm_handle, NULL, 0, 0);
 				gi.dprintf ("HTTP Error: %s: %s\n", dl->URL, curl_easy_strerror (result));
-				break;
+				curl_multi_remove_handle (multi, dl->curl);
+				dl->inuse = false;
+				continue;
 		}
 
-		if (dl->tempBuffer) {
-			gi.TagFree (dl->tempBuffer);
-			dl->tempBuffer = NULL;
-		}
+		//show some stats
+		curl_easy_getinfo (curl, CURLINFO_TOTAL_TIME, &timeTaken);
+		curl_easy_getinfo (curl, CURLINFO_SIZE_DOWNLOAD_T, &fileSize);
 
+		//FIXME:
+		//technically i shouldn't need to do this as curl will auto reuse the
+		//existing handle when you change the URL. however, the handleCount goes
+		//all weird when reusing a download slot in this way. if you can figure
+		//out why, please let me know.
 		curl_multi_remove_handle (multi, dl->curl);
+
 		dl->inuse = false;
+
+		gi.dprintf ("HTTP: Finished %s: %.f bytes, %.2fkB/sec\n", dl->URL, fileSize, (fileSize / 1024.0) / timeTaken);
 	} while (msgs_in_queue > 0);
 }
 
 qboolean HTTP_QueueDownload (tdm_download_t *d)
 {
-	dlhandle_t	*dl;
-	int			i;
+	unsigned	i;
+
+	if (handleCount == MAX_DOWNLOADS)
+	{
+		if (d->type == DL_CONFIG)
+			gi.cprintf (d->initiator, PRINT_HIGH, "Another download is already pending, please try again later.\n");
+		return false;
+	}
 
 	if (!g_http_enabled->value)
 	{
@@ -372,10 +448,16 @@ qboolean HTTP_QueueDownload (tdm_download_t *d)
 		return false;
 	}
 
+	if (!otdm_api_ip[0])
+	{
+		if (d->type == DL_CONFIG)
+			gi.cprintf (d->initiator, PRINT_HIGH, "This server failed to resolve the OpenTDM web API server.\n");
+		return false;
+	}
+
 	for (i = 0; i < MAX_DOWNLOADS; i++)
 	{
-		dl = &downloads[i];
-		if (!dl->inuse)
+		if (!downloads[i].inuse)
 			break;
 	}
 
@@ -386,14 +468,15 @@ qboolean HTTP_QueueDownload (tdm_download_t *d)
 		return false;
 	}
 
-	dl->tdm_handle = d;
-	strcpy (dl->filePath, d->path);
-	if (HTTP_StartDownload (dl))
-		return true;
+	downloads[i].tdm_handle = d;
+	downloads[i].inuse = true;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-truncation"
+	Q_strncpy (downloads[i].filePath, d->path, sizeof(downloads[i].filePath)-1);
+#pragma GCC diagnostic pop
+	HTTP_StartDownload (&downloads[i]);
 
-	if (d->type == DL_CONFIG)
-		gi.cprintf (d->initiator, PRINT_HIGH, "Couldn't start HTTP download.\n");
-	return false;
+	return true;
 }
 
 /*
@@ -413,17 +496,19 @@ void HTTP_RunDownloads (void)
 	if (!handleCount)
 		return;
 
-	ret = curl_multi_perform (multi, &newHandleCount);
+	do
+	{
+		ret = curl_multi_perform (multi, &newHandleCount);
+		if (newHandleCount < handleCount)
+		{
+			HTTP_FinishDownload ();
+			handleCount = newHandleCount;
+		}
+	} while (ret == CURLM_CALL_MULTI_PERFORM);
+
 	if (ret != CURLM_OK)
 	{
 		gi.dprintf ("HTTP_RunDownloads: curl_multi_perform error.\n");
-		return;
-	}
-
-	if (newHandleCount < handleCount)
-	{
-		HTTP_FinishDownload ();
-		handleCount = newHandleCount;
 	}
 }
 #else
@@ -436,14 +521,13 @@ void HTTP_Init (void)
 	gi.dprintf ("WARNING: OpenTDM was built without libcurl. Some features will be unavailable.\n");
 }
 
-void HTTP_Shutdown (void)
-{
-}
-
 qboolean HTTP_QueueDownload (tdm_download_t *d)
 {
 	if (d->type == DL_CONFIG)
 		gi.cprintf (d->initiator, PRINT_HIGH, "HTTP functions are not compiled on this server.\n");
 	return false;
+}
+void HTTP_ResolveOTDMServer (void)
+{
 }
 #endif
