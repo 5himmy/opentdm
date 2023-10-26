@@ -39,9 +39,9 @@ void MoveClientToIntermission (edict_t *ent)
 
 	VectorCopy (level.intermission_origin, ent->s.origin);
 
-	ent->client->ps.pmove.origin[0] = COORD2SHORT(level.intermission_origin[0]);
-	ent->client->ps.pmove.origin[1] = COORD2SHORT(level.intermission_origin[1]);
-	ent->client->ps.pmove.origin[2] = COORD2SHORT(level.intermission_origin[2]);
+	ent->client->ps.pmove.origin[0] = level.intermission_origin[0]*8;
+	ent->client->ps.pmove.origin[1] = level.intermission_origin[1]*8;
+	ent->client->ps.pmove.origin[2] = level.intermission_origin[2]*8;
 	
 	VectorCopy (level.intermission_angle, ent->client->ps.viewangles);
 	VectorCopy (level.intermission_angle, ent->client->v_angle);
@@ -77,7 +77,7 @@ void MoveClientToIntermission (edict_t *ent)
 	ent->client->weapon_sound = 0;
 
 	// add the layout
-	gi.WriteByte (svc_layout);
+	gi.WriteByte (SVC_LAYOUT);
 	gi.WriteString (TDM_ScoreBoardString (ent));
 	gi.unicast (ent, true);
 }
@@ -145,7 +145,7 @@ DeathmatchScoreboardMessage
 
 ==================
 */
-void DeathmatchScoreboardMessage (edict_t *ent, edict_t *killer)
+void ScoreboardMessage (edict_t *ent, edict_t *killer)
 {
 	char	entry[1024];
 	char	string[1400];
@@ -154,6 +154,7 @@ void DeathmatchScoreboardMessage (edict_t *ent, edict_t *killer)
 	int		sorted[MAX_CLIENTS];
 	int		sortedscores[MAX_CLIENTS];
 	int		score, total;
+	int		picnum;
 	int		x, y;
 	gclient_t	*cl;
 	edict_t		*cl_ent;
@@ -196,7 +197,7 @@ void DeathmatchScoreboardMessage (edict_t *ent, edict_t *killer)
 		cl = &game.clients[sorted[i]];
 		cl_ent = g_edicts + 1 + sorted[i];
 
-		(void)gi.imageindex ("i_fixme");
+		picnum = gi.imageindex ("i_fixme");
 		x = (i>=6) ? 160 : 0;
 		y = 32 + 32 * (i%6);
 
@@ -229,7 +230,7 @@ void DeathmatchScoreboardMessage (edict_t *ent, edict_t *killer)
 		stringlength += j;
 	}
 
-	gi.WriteByte (svc_layout);
+	gi.WriteByte (SVC_LAYOUT);
 	gi.WriteString (string);
 }
 
@@ -245,7 +246,7 @@ Note that it isn't that hard to overflow the 1400 byte message limit!
 void DeathmatchScoreboard (edict_t *ent)
 {
 	//DeathmatchScoreboardMessage (ent, ent->enemy);
-	gi.WriteByte (svc_layout);
+	gi.WriteByte (SVC_LAYOUT);
 	gi.WriteString (TDM_ScoreBoardString (ent));
 	gi.unicast (ent, true);
 }
@@ -311,37 +312,20 @@ void Cmd_Help_f (edict_t *ent)
 //=======================================================================
 
 //displays either current or previous team scores depending on which scoreboard is up
+/**
+ * Team names are now hardcoded in the statusbar, so A is always first, then B
+ */
 static void G_SetTeamScoreStats (edict_t *ent)
 {
-	int		first_team;
-
-	if (ent->client->showoldscores)
-	{
-		if (old_matchinfo.scores[TEAM_A] < old_matchinfo.scores[TEAM_B])
-			first_team = TEAM_B;
-		else
-			first_team = TEAM_A;
-
-		ent->client->ps.stats[STAT_FIRST_TEAM_SCORE] = old_matchinfo.scores[first_team];
-		ent->client->ps.stats[STAT_SECOND_TEAM_SCORE] = old_matchinfo.scores[(first_team % 2) + 1];
+	if (ent->client->showoldscores) {
+		ent->client->ps.stats[STAT_FIRST_TEAM_SCORE] = old_matchinfo.scores[TEAM_A];
+		ent->client->ps.stats[STAT_SECOND_TEAM_SCORE] = old_matchinfo.scores[(TEAM_A % 2) + 1];
+	} else {
+		ent->client->ps.stats[STAT_FIRST_TEAM_SCORE] = teaminfo[TEAM_A].score;
+		ent->client->ps.stats[STAT_SECOND_TEAM_SCORE] = teaminfo[(TEAM_A % 2) + 1].score;
 	}
-	else
-	{
-		if (teaminfo[TEAM_A].score < teaminfo[TEAM_B].score)
-			first_team = TEAM_B;
-		else
-			first_team = TEAM_A;
-
-		ent->client->ps.stats[STAT_FIRST_TEAM_SCORE] = teaminfo[first_team].score;
-		ent->client->ps.stats[STAT_SECOND_TEAM_SCORE] = teaminfo[(first_team % 2) + 1].score;
-	}
-
-	ent->client->ps.stats[STAT_FIRST_TEAM_NAME_INDEX] = CS_TDM_TEAM_A_NAME + first_team - 1;
-	ent->client->ps.stats[STAT_SECOND_TEAM_NAME_INDEX] = CS_TDM_TEAM_A_NAME + (first_team % 2);
-
-	ent->client->ps.stats[STAT_FIRST_TEAM_STATUS_INDEX] = CS_TDM_TEAM_A_STATUS + first_team - 1;
-	ent->client->ps.stats[STAT_SECOND_TEAM_STATUS_INDEX] = CS_TDM_TEAM_A_STATUS + (first_team % 2);
 }
+
 
 /*
 ===============
@@ -358,9 +342,11 @@ void G_SetStats (edict_t *ent)
 
 	ent->client->ps.stats[STAT_ID_VIEW_INDEX] = 0;
 
-	if (!ent->client->pers.disable_id_view)
-		if (TDM_GetPlayerIdView (ent))
+	if (!ent->client->pers.disable_id_view) {
+		if (TDM_GetPlayerIdView (ent)) {
 			ent->client->ps.stats[STAT_ID_VIEW_INDEX] = CS_TDM_ID_VIEW;
+		}
+	}
 	
 	//
 	// health
@@ -428,110 +414,119 @@ void G_SetStats (edict_t *ent)
 	//
 	// timers
 	//
-	if (ent->client->quad_framenum > level.framenum)
-	{
+	if (ent->client->quad_framenum > level.framenum) {
 		ent->client->ps.stats[STAT_TIMER_ICON] = gi.imageindex ("p_quad");
 		ent->client->ps.stats[STAT_TIMER] = FRAMES_TO_SECS((ent->client->quad_framenum - level.framenum));
-	}
-	else if (ent->client->enviro_framenum > level.framenum)
-	{
+	} else if (ent->client->pers.item_timer[TIMER_ARMOR] > level.framenum) {
+		ent->client->ps.stats[STAT_TIMER_ICON] = ent->client->pers.item_timer_icon[TIMER_ARMOR];
+		ent->client->ps.stats[STAT_TIMER] = FRAMES_TO_SECS(ent->client->pers.item_timer[TIMER_ARMOR] - level.framenum);
+	} else if (ent->client->enviro_framenum > level.framenum) {
 		ent->client->ps.stats[STAT_TIMER_ICON] = gi.imageindex ("p_envirosuit");
 		ent->client->ps.stats[STAT_TIMER] = FRAMES_TO_SECS(ent->client->enviro_framenum - level.framenum);
-	}
-	else if (ent->client->breather_framenum > level.framenum)
-	{
+	} else if (ent->client->breather_framenum > level.framenum) {
 		ent->client->ps.stats[STAT_TIMER_ICON] = gi.imageindex ("p_rebreather");
 		ent->client->ps.stats[STAT_TIMER] = FRAMES_TO_SECS(ent->client->breather_framenum - level.framenum);
-	}
-	else
-	{
+	} else {
 		ent->client->ps.stats[STAT_TIMER_ICON] = 0;
 		ent->client->ps.stats[STAT_TIMER] = 0;
 	}
 
-	if (ent->client->invincible_framenum > level.framenum)
-	{
-		//is the usual timer in use?
-		if (ent->client->ps.stats[STAT_TIMER])
-		{
-			//yes, show new timer for invuln
-			ent->client->ps.stats[STAT_TIMER_PENT_ICON] = gi.imageindex ("p_invulnerability");
-			ent->client->ps.stats[STAT_TIMER_PENT] = FRAMES_TO_SECS(ent->client->invincible_framenum - level.framenum);
-		}
-		else
-		{
-			ent->client->ps.stats[STAT_TIMER_ICON] = gi.imageindex ("p_invulnerability");
-			ent->client->ps.stats[STAT_TIMER] = FRAMES_TO_SECS(ent->client->invincible_framenum - level.framenum);
-
-			// clear previous timer if there was something
-			if (ent->client->ps.stats[STAT_TIMER_PENT])
-			{
-				ent->client->ps.stats[STAT_TIMER_PENT_ICON] = 0;
-				ent->client->ps.stats[STAT_TIMER_PENT] = 0;
-			}
-		}
-	}
-	else
-	{
-		ent->client->ps.stats[STAT_TIMER_PENT_ICON] = 0;
-		ent->client->ps.stats[STAT_TIMER_PENT] = 0;
+	int stat, stat_icon;
+	if (ent->client->quad_framenum > level.framenum ||
+			ent->client->pers.item_timer[TIMER_ARMOR] > level.framenum ||
+			ent->client->enviro_framenum > level.framenum ||
+			ent->client->breather_framenum > level.framenum) {
+		stat = STAT_TIMER2;
+		stat_icon = STAT_TIMER2_ICON;
+	} else {
+		stat = STAT_TIMER;
+		stat_icon = STAT_TIMER_ICON;
 	}
 
-	//
+	ent->client->ps.stats[STAT_TIMER2_ICON] = 0;
+	ent->client->ps.stats[STAT_TIMER2] = 0;
+
+	if (ent->client->invincible_framenum > level.framenum) {
+		ent->client->ps.stats[stat_icon] = gi.imageindex ("p_invulnerability");
+		ent->client->ps.stats[stat] = FRAMES_TO_SECS(ent->client->invincible_framenum - level.framenum);
+	} else if (ent->client->pers.item_timer[TIMER_WEAPON] > level.framenum) {
+		ent->client->ps.stats[stat_icon] = ent->client->pers.item_timer_icon[TIMER_WEAPON];
+		ent->client->ps.stats[stat] = FRAMES_TO_SECS(ent->client->pers.item_timer[TIMER_WEAPON] - level.framenum);
+	} else {
+		ent->client->ps.stats[stat_icon] = 0;
+		ent->client->ps.stats[stat] = 0;
+	}
+
+
 	// selected item
-	//
-	if (ent->client->selected_item == -1 || itemlist[ent->client->selected_item].icon == NULL)
+	if (ent->client->selected_item == -1 || itemlist[ent->client->selected_item].icon == NULL) {
 		ent->client->ps.stats[STAT_SELECTED_ICON] = 0;
-	else
+	} else {
 		ent->client->ps.stats[STAT_SELECTED_ICON] = gi.imageindex (itemlist[ent->client->selected_item].icon);
+	}
+
 
 	ent->client->ps.stats[STAT_SELECTED_ITEM] = ent->client->selected_item;
 
-	//
+
 	// layouts
-	//
 	ent->client->ps.stats[STAT_LAYOUTS] = 0;
 
 	if (ent->health <= 0 || tdm_match_status == MM_SCOREBOARD || ent->client->showscores ||
-			ent->client->pers.menu.active || ent->client->showoldscores || ent->client->showmotd)
+			ent->client->pers.menu.active || ent->client->showoldscores || ent->client->showmotd) {
 		ent->client->ps.stats[STAT_LAYOUTS] |= 1;
+	}
 
+	// current match status
 	ent->client->ps.stats[STAT_GAME_STATUS_STRING_INDEX] = CS_TDM_GAME_STATUS;
 
-	if (vote.active)
+	// vote proposal
+	if (vote.active) {
 		ent->client->ps.stats[STAT_VOTE_STRING_INDEX] = CS_TDM_VOTE_STRING;
-	else
+	} else {
 		ent->client->ps.stats[STAT_VOTE_STRING_INDEX] = 0;
-	//if (ent->client->showinventory && ent->health > 0)
-	//	ent->client->ps.stats[STAT_LAYOUTS] |= 2;
+	}
 
 	//
 	// frags
 	//
 	G_SetTeamScoreStats (ent);
 
-	// frags for server browser
+	// frags for server browser and in-game hud
 	ent->client->ps.stats[STAT_FRAGS] = ent->client->resp.score;
-	// frags for ingame hud
-	ent->client->ps.stats[STAT_SCORE] = ent->client->resp.score;
 
+	// match timer
 	ent->client->ps.stats[STAT_TIME_REMAINING] = CS_TDM_TIMELIMIT_STRING;
 
-	if (tdm_match_status == MM_TIMEOUT)
+	// timeout timer
+	if (tdm_match_status == MM_TIMEOUT) {
 		ent->client->ps.stats[STAT_TIMEOUT_STRING_INDEX] = CS_TDM_TIMEOUT_STRING;
-	else
+	} else {
 		ent->client->ps.stats[STAT_TIMEOUT_STRING_INDEX] = 0;
+	}
 
 	//
 	// help icon / current weapon if not shown
 	//
 	if ( (ent->client->pers.hand == CENTER_HANDED || ent->client->ps.fov > 90)
-		&& ent->client->weapon)
+		&& ent->client->weapon) {
 		ent->client->ps.stats[STAT_HELPICON] = gi.imageindex (ent->client->weapon->icon);
-	else
+	} else {
 		ent->client->ps.stats[STAT_HELPICON] = 0;
+	}
 
-	ent->client->ps.stats[STAT_SPECTATOR] = 0;
+	// update ammo counts if HUD is enabled
+	if (ent->client->pers.weaponhud && g_weapon_hud->value > 0) {
+		ent->client->ps.stats[STAT_WEAPHUD_BULLETS] = ent->client->inventory[ITEM_AMMO_BULLETS];
+		ent->client->ps.stats[STAT_WEAPHUD_SHELLS] = ent->client->inventory[ITEM_AMMO_SHELLS];
+		ent->client->ps.stats[STAT_WEAPHUD_GRENADES] = ent->client->inventory[ITEM_AMMO_GRENADES];
+		ent->client->ps.stats[STAT_WEAPHUD_CELLS] = ent->client->inventory[ITEM_AMMO_CELLS];
+		ent->client->ps.stats[STAT_WEAPHUD_ROCKETS] = ent->client->inventory[ITEM_AMMO_ROCKETS];
+		ent->client->ps.stats[STAT_WEAPHUD_SLUGS] = ent->client->inventory[ITEM_AMMO_SLUGS];
+
+		// if the time is right...
+		TDM_UpdateHud(ent, false);
+	}
 }
 
 /*
@@ -543,15 +538,13 @@ void G_SetSpectatorStats (edict_t *ent)
 {
 	gclient_t *cl = ent->client;
 
-	if (!cl->chase_target)
+	if (!cl->chase_target) {
 		G_SetStats (ent);
-	else
-	{
+	} else {
 		memcpy (cl->ps.stats, cl->chase_target->client->ps.stats, sizeof(cl->ps.stats));
 
 		//copy gun if in-eyes mode
-		if (cl->chase_mode == CHASE_EYES)
-		{
+		if (cl->chase_mode == CHASE_EYES) {
 			cl->ps.gunindex = cl->chase_target->client->ps.gunindex;
 			cl->ps.gunframe = cl->chase_target->client->ps.gunframe;
 			VectorCopy (cl->chase_target->client->ps.gunangles, cl->ps.gunangles);
@@ -561,8 +554,9 @@ void G_SetSpectatorStats (edict_t *ent)
 		}
 
 		//if our target player has the id stat up, we need to set configstrings for ourself.
-		if (cl->ps.stats[STAT_ID_VIEW_INDEX])
+		if (cl->ps.stats[STAT_ID_VIEW_INDEX]) {
 			TDM_GetPlayerIdView (ent);
+		}
 
 		//team scores are independent in spectator
 		G_SetTeamScoreStats (ent);
@@ -571,22 +565,18 @@ void G_SetSpectatorStats (edict_t *ent)
 		cl->ps.stats[STAT_FRAGS] = 0;
 	}
 
-	cl->ps.stats[STAT_SPECTATOR] = 1;
-
 	// layouts are independent in spectator
 	cl->ps.stats[STAT_LAYOUTS] = 0;
 
 	if (tdm_match_status == MM_SCOREBOARD || cl->pers.menu.active || ent->client->showscores ||
-			ent->client->showoldscores || ent->client->showmotd)
+			ent->client->showoldscores || ent->client->showmotd) {
 		cl->ps.stats[STAT_LAYOUTS] |= 1;
+	}
 
-	//if (cl->showinventory && ent->health > 0)
-	//	cl->ps.stats[STAT_LAYOUTS] |= 2;
-
-	if (cl->chase_target && cl->chase_target->inuse)
+	if (cl->chase_target && cl->chase_target->inuse) {
 		cl->ps.stats[STAT_CHASE] = CS_TDM_SPECTATOR_STRINGS + 
 			(cl->chase_target - g_edicts) - 1;
-	else
+	} else {
 		cl->ps.stats[STAT_CHASE] = 0;
+	}
 }
-
