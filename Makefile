@@ -9,11 +9,11 @@ ifndef CPU
 endif
 
 ifndef REV
-    REV := $(1.0)
+    REV := $(shell git rev-list --count HEAD)
 endif
 
 ifndef VER
-    VER := r$(REV)~$(a1)
+    VER := r$(REV)~$(shell git rev-parse --short HEAD)
 endif
 
 CC ?= gcc
@@ -102,4 +102,3 @@ clean:
 strip: $(TARGET)
 	$(E) [STRIP]
 	$(Q)$(STRIP) $(TARGET)
-
