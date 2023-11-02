@@ -1,1 +1,1 @@
-option('libcurl', type: 'feature', value: 'true', description: 'libcurl support')
+option('libcurl', type: 'feature', value: 'enabled', description: 'libcurl support')
