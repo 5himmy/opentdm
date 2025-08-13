@@ -2098,7 +2098,7 @@ void TDM_Vote_f(edict_t *ent) {
                     "  chat <all/players>\n"
                     "  restart\n"
                     "  bugs <0/1/2>\n"
-                    "  shuffle\n"
+                    "  shuffle (can also use \"randomize\" or \"mix\")\n"
                     "  armortimer <0/1>\n"
                     "  weapontimer <0/1>\n"
                     "  timeoutlimit <integer> (per player; 0 == unlimited)\n"
@@ -2206,7 +2206,7 @@ void TDM_Vote_f(edict_t *ent) {
         started_new_vote = TDM_VoteAbort(ent);
     } else if (!Q_stricmp(cmd, "bugs")) {
         started_new_vote = TDM_VoteBugs(ent);
-    } else if (!Q_stricmp(cmd, "shuffle") || !Q_stricmp(cmd, "randomize")) {
+    } else if (!Q_stricmp(cmd, "shuffle") || !Q_stricmp(cmd, "randomize") || !Q_stricmp(cmd, "mix")) {
         started_new_vote = TDM_VoteShuffle(ent);
     } else if (!Q_stricmp(cmd, "armortimer")) {
         started_new_vote = TDM_VoteArmorTimer(ent);
