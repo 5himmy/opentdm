@@ -41,6 +41,8 @@ static const tdm_macro_t tdm_macros[] =
     {"#a", 2, TDM_Macro_RawArmor},
     {"%m", 2, TDM_Macro_CurrentAmmo},
     {"%M", 2, TDM_Macro_TeammateAmmo},
+    {"#t", 2, TDM_Macro_TotalStack},
+    {"#T", 2, TDM_Macro_RawTotalStack},
 };
 
 /**
@@ -370,6 +372,38 @@ const char* TDM_Macro_Location(edict_t *ent, size_t *length) {
         }
     }
 
+    return buff;
+}
+
+/**
+ * Get the player's combined health and armor value
+ */
+const char* TDM_Macro_TotalStack(edict_t *ent, size_t *length) {
+    static char buff[16];
+    int armor;
+
+    armor = ArmorIndex(ent);
+    if (armor == 0) {
+        *length = 1;
+        return "0";
+    }
+    *length = sprintf(buff, "Stack:%d", ent->health + ent->client->inventory[armor]);
+    return buff;
+}
+
+/**
+ * Get the player's naked combined health and armor value
+ */
+const char* TDM_Macro_RawTotalStack(edict_t *ent, size_t *length) {
+    static char buff[16];
+    int armor;
+
+    armor = ArmorIndex(ent);
+    if (armor == 0) {
+        *length = 1;
+        return "0";
+    }
+    *length = sprintf(buff, "%d", ent->health + ent->client->inventory[armor]);
     return buff;
 }
 

@@ -20,3 +20,5 @@ const char *TDM_Macro_RawHealth (edict_t *ent, size_t *length);
 const char *TDM_Macro_ShortArmor (edict_t *ent, size_t *length);
 const char *TDM_Macro_ShortWeapon (edict_t *ent, size_t *length);
 const char *TDM_Macro_TeammateAmmo(edict_t *ent, size_t *length);
+const char *TDM_Macro_TotalStack(edict_t *ent, size_t *length);
+const char *TDM_Macro_RawTotalStack(edict_t *ent, size_t *length);
