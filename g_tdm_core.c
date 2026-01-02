@@ -28,6 +28,7 @@ int SERVER_FPS;
 
 teaminfo_t teaminfo[MAX_TEAMS];
 matchmode_t tdm_match_status;
+match_rosters_t match_rosters;
 
 int soundcache[MAX_SOUNDS];
 
@@ -951,37 +952,121 @@ qboolean TDM_Is1V1(void) {
 }
 
 /**
- * All players are ready so start the countdown
+ * Clear match rosters data
+ */
+void TDM_ClearRosters(void)
+{
+    memset(&match_rosters, 0, sizeof(match_rosters));
+}
+
+/**
+ * Build team rosters from current players
+ * Creates both comma-separated (for display) and underscore-separated (for filenames) formats
+ */
+void TDM_BuildRosters(void)
+{
+    edict_t *ent;
+    int i;
+    qboolean first_a = true;
+    qboolean first_b = true;
+
+    // Clear previous data
+    TDM_ClearRosters();
+
+    for (i = 0; i < game.maxclients; i++)
+    {
+        ent = g_edicts + 1 + i;
+        if (!ent->inuse || !ent->client || !ent->client->pers.team)
+            continue;
+
+        if (ent->client->pers.team == TEAM_A)
+        {
+            // Display format (comma separated)
+            if (!first_a)
+                strcat(match_rosters.team_a.names, ", ");
+            strcat(match_rosters.team_a.names, ent->client->pers.netname);
+
+            // Filename format (underscore separated)
+            if (!first_a)
+                strcat(match_rosters.team_a.names_underscore, "_");
+            strcat(match_rosters.team_a.names_underscore, ent->client->pers.netname);
+
+            match_rosters.team_a.count++;
+            first_a = false;
+        }
+        else if (ent->client->pers.team == TEAM_B)
+        {
+            // Display format (comma separated)
+            if (!first_b)
+                strcat(match_rosters.team_b.names, ", ");
+            strcat(match_rosters.team_b.names, ent->client->pers.netname);
+
+            // Filename format (underscore separated)
+            if (!first_b)
+                strcat(match_rosters.team_b.names_underscore, "_");
+            strcat(match_rosters.team_b.names_underscore, ent->client->pers.netname);
+
+            match_rosters.team_b.count++;
+            first_b = false;
+        }
+    }
+
+    match_rosters.valid = true;
+}
+
+/**
+ * Get Team A roster
+ */
+team_roster_t* TDM_GetTeamARoster(void)
+{
+    return &match_rosters.team_a;
+}
+
+/**
+ * Get Team B roster
+ */
+team_roster_t* TDM_GetTeamBRoster(void)
+{
+    return &match_rosters.team_b;
+}
+
+/**
+ * Generate demo filename with team rosters
  */
 const char* TDM_MakeDemoName(edict_t *ent) {
     int i;
-    int len;
+    size_t len;
     struct tm *ts;
     time_t t;
-    cvar_t *hostname;
     cvar_t *demohostname;
-    char *servername;
     static char string[1400];
+    char players_string[1024] = "";
 
-    hostname = gi.cvar("hostname", NULL, 0);
+    // Use already-built rosters (or build if needed)
+    if (!match_rosters.valid)
+        TDM_BuildRosters();
 
-    if (hostname) {
-        servername = hostname->string;
-    } else {
-        servername = "unnamed_server";
+    // Build player string for filename using underscore format
+    if (match_rosters.team_a.names_underscore[0] &&
+        match_rosters.team_b.names_underscore[0])
+    {
+        Com_sprintf(players_string, sizeof(players_string), "_%s_vs_%s",
+                    match_rosters.team_a.names_underscore,
+                    match_rosters.team_b.names_underscore);
     }
 
-    demohostname = gi.cvar("g_demo_hostname", servername, 0);
+    demohostname = gi.cvar("g_demo_hostname", "noname", 0);
 
     t = time(NULL);
     ts = localtime(&t);
 
-    // team1-team2_server_map_date-time
-    Com_sprintf(string, sizeof(string), "%s-%s_%s_%s_%d%02d%02d-%02d%02d%02d",
-            teaminfo[ent->client->pers.team].name,
-            teaminfo[(ent->client->pers.team % 2) + 1].name,
-            demohostname->string, level.mapname, ts->tm_year + 1900,
-            ts->tm_mon + 1, ts->tm_mday, ts->tm_hour, ts->tm_min, ts->tm_sec);
+    // servername_date-time_players_map_playername
+    Com_sprintf(string, sizeof(string), "%s_%d%02d%02d-%02d%02d%02d%s_%s_%s",
+            demohostname->string, ts->tm_year + 1900, ts->tm_mon + 1,
+            ts->tm_mday, ts->tm_hour, ts->tm_min, ts->tm_sec,
+            players_string,
+            level.mapname,
+            ent->client->pers.netname);
 
     // filter not allowed characters
     len = strlen(string);
@@ -998,7 +1083,7 @@ const char* TDM_MakeDemoName(edict_t *ent) {
 }
 
 /**
- *
+ * Generate server/MVD demo filename with team rosters
  */
 char* TDM_MakeServerDemoName(void) {
     int i;
@@ -1007,16 +1092,32 @@ char* TDM_MakeServerDemoName(void) {
     time_t t;
     cvar_t *demohostname;
     static char string[1400];
+    char players_string[1024] = "";
+
+    // Use already-built rosters (or build if needed)
+    if (!match_rosters.valid)
+        TDM_BuildRosters();
+
+    // Build player string for filename using underscore format
+    if (match_rosters.team_a.names_underscore[0] &&
+        match_rosters.team_b.names_underscore[0])
+    {
+        Com_sprintf(players_string, sizeof(players_string), "_%s_vs_%s",
+                    match_rosters.team_a.names_underscore,
+                    match_rosters.team_b.names_underscore);
+    }
 
     demohostname = gi.cvar("g_demo_hostname", "noname", 0);
 
     t = time(NULL);
     ts = localtime(&t);
 
-    // servershortname_date-time_map
-    Com_sprintf(string, sizeof(string), "%s_%d%02d%02d-%02d%02d%02d_%s",
+    // servername_date-time_players_map
+    Com_sprintf(string, sizeof(string), "%s_%d%02d%02d-%02d%02d%02d%s_%s",
             demohostname->string, ts->tm_year + 1900, ts->tm_mon + 1,
-            ts->tm_mday, ts->tm_hour, ts->tm_min, ts->tm_sec, level.mapname);
+            ts->tm_mday, ts->tm_hour, ts->tm_min, ts->tm_sec,
+            players_string,
+            level.mapname);
 
     // filter not allowed characters
     len = strlen(string);
@@ -1034,6 +1135,20 @@ char* TDM_MakeServerDemoName(void) {
 }
 
 /**
+ * Announces team lineups before countdown starts
+ */
+void TDM_AnnounceTeams(void)
+{
+    // Build fresh rosters
+    TDM_BuildRosters();
+
+    // Print the announcement using comma-separated format
+    gi.bprintf(PRINT_HIGH, "%s VS %s\n",
+               match_rosters.team_a.names,
+               match_rosters.team_b.names);
+}
+
+/**
  * All players are ready so start the countdown
  */
 void TDM_BeginCountdown(void) {
@@ -1047,6 +1162,9 @@ void TDM_BeginCountdown(void) {
     }
 
     gi.bprintf(PRINT_HIGH, "Match Settings:\n%s", TDM_SettingsString());
+
+    // Announce team rosters
+    TDM_AnnounceTeams();
 
     gi.bprintf(PRINT_HIGH,
             "All players ready! Starting countdown (%g secs)...\n",
@@ -2472,6 +2590,9 @@ void TDM_ResetGameState(void) {
     tdm_match_status = MM_WARMUP;
     TDM_ResetLevel();
     TDM_SetFrameTime();
+
+    // Clear match rosters
+    TDM_ClearRosters();
 
     //don't memset, since we have info we do actually want to preserve
     teaminfo[TEAM_A].score = teaminfo[TEAM_B].score = 0;

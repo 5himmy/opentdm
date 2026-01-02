@@ -1177,6 +1177,26 @@ extern matchinfo_t	current_matchinfo;
 extern matchinfo_t	old_matchinfo;
 
 /**
+ * Structure to hold a team's roster in different formats
+ */
+typedef struct {
+    char names[512];            // "Player1, Player2, Player3" format (for display)
+    char names_underscore[512]; // "Player1_Player2_Player3" format (for filenames)
+    int count;
+} team_roster_t;
+
+/**
+ * Structure to hold rosters for all teams in a match
+ */
+typedef struct {
+    team_roster_t team_a;
+    team_roster_t team_b;
+    qboolean valid;             // Set to true when rosters are built
+} match_rosters_t;
+
+extern match_rosters_t match_rosters;
+
+/**
  *
  */
 typedef enum {
