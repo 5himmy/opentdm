@@ -416,6 +416,7 @@ edict_t* TDM_ClosestTeammate(edict_t *ent) {
  */
 void TDM_BeginMatch(void) {
     edict_t *ent;
+    time_t now;
 
     //level.match_start_framenum = 0;
     level.match_end_framenum = level.framenum
@@ -425,6 +426,11 @@ void TDM_BeginMatch(void) {
     //must setup teamplayers before level, or we lose item spawn stats
     TDM_SetupMatchInfoAndTeamPlayers();
 
+    // Generate unique match ID (timestamp-based)
+    time(&now);
+    Com_sprintf(current_matchinfo.match_id, sizeof(current_matchinfo.match_id),
+                "%ld", (long)now);
+
     //respawn the map
     TDM_ResetLevel();
 
@@ -432,6 +438,7 @@ void TDM_BeginMatch(void) {
 
     // Send match start to web API
     HTTP_PostMatchEvent("MATCH_START",
+                        current_matchinfo.match_id,
                         match_rosters.team_a.names,
                         match_rosters.team_b.names,
                         0, 0, false);
@@ -1423,13 +1430,6 @@ void TDM_PrintMatchEnd(void)
                    match_rosters.team_b.names);
     }
 
-    // Send match end to web API
-    HTTP_PostMatchEvent("MATCH_ENDED",
-                        match_rosters.team_a.names,
-                        match_rosters.team_b.names,
-                        score_a,
-                        score_b,
-                        forfeit);
 }
 
 /**
@@ -1438,6 +1438,7 @@ void TDM_PrintMatchEnd(void)
  */
 void TDM_EndMatch(void) {
     int winner;
+    qboolean forfeit;
     edict_t *ent;
 
     //cancel any mid-game vote (restart, etc)
@@ -1458,14 +1459,17 @@ void TDM_EndMatch(void) {
     }
 
     winner = 0;
+    forfeit = false;
 
     if (teaminfo[TEAM_A].players == 0 && teaminfo[TEAM_B].players == 0) {
         winner = TEAM_SPEC;
         gi.bprintf(PRINT_HIGH, "Match canceled, no players remaining.\n");
     } else if (teaminfo[TEAM_A].players == 0) {
         winner = TEAM_B;
+        forfeit = true;
     } else if (teaminfo[TEAM_B].players == 0) {
         winner = TEAM_A;
+        forfeit = true;
     } else if (teaminfo[TEAM_A].score > teaminfo[TEAM_B].score) {
         winner = TEAM_A;
     } else if (teaminfo[TEAM_B].score > teaminfo[TEAM_A].score) {
@@ -1476,6 +1480,20 @@ void TDM_EndMatch(void) {
     TDM_PrintMatchEnd();
 
     current_matchinfo.winning_team = winner;
+    current_matchinfo.scores[TEAM_A] = teaminfo[TEAM_A].score;
+    current_matchinfo.scores[TEAM_B] = teaminfo[TEAM_B].score;
+
+    // Send match end event to web API
+    HTTP_PostMatchEvent("MATCH_ENDED",
+                        current_matchinfo.match_id,
+                        match_rosters.team_a.names,
+                        match_rosters.team_b.names,
+                        teaminfo[TEAM_A].score,
+                        teaminfo[TEAM_B].score,
+                        forfeit);
+
+    // Send full match stats to web API
+    HTTP_PostMatchEndWithStats(&current_matchinfo, forfeit);
 
     level.timeout_end_framenum = 0;
     level.match_resume_framenum = 0;

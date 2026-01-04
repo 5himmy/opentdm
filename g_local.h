@@ -1162,6 +1162,7 @@ struct matchinfo_s {
     int             winning_team;
     int             scores[MAX_TEAMS];
     char            mapname[MAX_QPATH];
+    char            match_id[32];           // Unique match identifier for API correlation
     char            scoreboard_string[1400];
     unsigned        item_spawn_count[MAX_ITEMS];
     char            teamnames[MAX_TEAMS][MAX_TEAMNAME_LENGTH];

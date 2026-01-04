@@ -65,7 +65,7 @@ dlhandle_t downloads[MAX_DOWNLOADS];
 typedef struct posthandle_s {
     CURL *curl;
     struct curl_slist *headers;
-    char payload[2048];
+    char payload[32768];    // 32KB for full match stats
     char url[512];
     qboolean inuse;
 } posthandle_t;
@@ -81,6 +81,11 @@ static char hostHeader[64];
 static struct curl_slist *http_header_slist;
 
 static time_t last_dns_lookup;
+
+// Pre-resolved API URL for async POST (avoids DNS blocking during match)
+static char api_resolved_host[256];      // e.g., "example.com:443:1.2.3.4"
+static struct curl_slist *api_resolve_list = NULL;
+static time_t api_last_resolve;
 
 /**
  * Properly escapes a path with HTTP %encoding. libcurl's function
@@ -230,6 +235,87 @@ void HTTP_ResolveOTDMServer(void) {
 }
 
 /**
+ * Pre-resolve the g_api_url hostname so we don't block during matches.
+ * Call this on server startup and periodically.
+ */
+void HTTP_ResolveAPIServer(void) {
+    char url_copy[512];
+    char *host_start, *host_end;
+    char hostname[256];
+    int port = 443;  // default HTTPS
+    struct hostent *h;
+    char resolved_ip[16];
+
+    if (!g_http_enabled->value) {
+        return;
+    }
+
+    if (!g_api_url || !g_api_url->string[0]) {
+        return;
+    }
+
+    // Only resolve once (at startup) - never during gameplay
+    if (api_resolve_list) {
+        return;
+    }
+
+    Q_strncpy(url_copy, g_api_url->string, sizeof(url_copy) - 1);
+
+    // Parse hostname from URL (http://host:port/path or https://host/path)
+    host_start = strstr(url_copy, "://");
+    if (!host_start) {
+        return;
+    }
+    host_start += 3;
+
+    // Check for port
+    if (strncmp(g_api_url->string, "http://", 7) == 0) {
+        port = 80;
+    }
+
+    host_end = strchr(host_start, '/');
+    if (host_end) {
+        *host_end = '\0';
+    }
+
+    // Check for explicit port
+    char *port_str = strchr(host_start, ':');
+    if (port_str) {
+        *port_str = '\0';
+        port = atoi(port_str + 1);
+    }
+
+    Q_strncpy(hostname, host_start, sizeof(hostname) - 1);
+
+    gi.cprintf(NULL, PRINT_HIGH, "Resolving API server %s -> ", hostname);
+
+    h = gethostbyname(hostname);
+    if (!h) {
+        gi.dprintf("FAILED\n");
+        gi.dprintf("WARNING: Could not resolve API server '%s'. Match stats will not be sent.\n", hostname);
+        return;
+    }
+
+    Q_strncpy(resolved_ip, inet_ntoa(*(struct in_addr*)h->h_addr_list[0]), sizeof(resolved_ip) - 1);
+    gi.cprintf(NULL, PRINT_HIGH, "%s\n", resolved_ip);
+
+    // Build CURLOPT_RESOLVE format: "hostname:port:ip"
+    Com_sprintf(api_resolved_host, sizeof(api_resolved_host), "%s:%d:%s", hostname, port, resolved_ip);
+
+    // Free old list and create new one
+    if (api_resolve_list) {
+        curl_slist_free_all(api_resolve_list);
+    }
+    api_resolve_list = curl_slist_append(NULL, api_resolved_host);
+
+    time(&api_last_resolve);
+
+    if (g_http_debug->value) {
+        gi.dprintf("API DNS pre-resolved: %s\n", api_resolved_host);
+    }
+}
+
+/**
  * Actually starts a download by adding it to the curl multihandle.
  */
 void HTTP_StartDownload(dlhandle_t *dl) {
@@ -307,6 +393,9 @@ void HTTP_Init(void) {
             g_http_domain->string);
     http_header_slist = curl_slist_append(http_header_slist, hostHeader);
 
+    // Pre-resolve API server to avoid DNS blocking during matches
+    HTTP_ResolveAPIServer();
+
     gi.dprintf("%s initialized.\n", curl_version());
 }
 
@@ -319,6 +408,10 @@ void HTTP_Shutdown(void) {
         multi = NULL;
     }
     curl_slist_free_all(http_header_slist);
+    if (api_resolve_list) {
+        curl_slist_free_all(api_resolve_list);
+        api_resolve_list = NULL;
+    }
     curl_global_cleanup();
 }
 
@@ -554,7 +647,8 @@ static size_t HTTP_DiscardResponse(void *ptr, size_t size, size_t nmemb, void *d
  * Send match event to web API (non-blocking, async)
  * Uses curl_multi for async operation - won't freeze the game server
  */
-void HTTP_PostMatchEvent(const char *event_type, const char *team_a, const char *team_b,
+void HTTP_PostMatchEvent(const char *event_type, const char *match_id,
+                         const char *team_a, const char *team_b,
                          int score_a, int score_b, qboolean forfeit)
 {
     posthandle_t *ph = NULL;
@@ -594,6 +688,7 @@ void HTTP_PostMatchEvent(const char *event_type, const char *team_a, const char 
     Com_sprintf(ph->payload, sizeof(ph->payload),
         "{"
         "\"event\":\"%s\","
+        "\"match_id\":\"%s\","
         "\"server\":\"%s\","
         "\"map\":\"%s\","
         "\"team_a\":\"%s\","
@@ -603,6 +698,7 @@ void HTTP_PostMatchEvent(const char *event_type, const char *team_a, const char 
         "\"forfeit\":%s"
         "}",
         event_type,
+        match_id,
         hostname->string,
         map_name,
         team_a,
@@ -658,6 +754,11 @@ void HTTP_PostMatchEvent(const char *event_type, const char *team_a, const char 
     curl_easy_setopt(ph->curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(ph->curl, CURLOPT_SSL_VERIFYHOST, 2L);
 
+    // Use pre-resolved DNS to avoid blocking during match
+    if (api_resolve_list) {
+        curl_easy_setopt(ph->curl, CURLOPT_RESOLVE, api_resolve_list);
+    }
+
     // Set CA bundle path for static libcurl (try common locations)
 #ifdef _WIN32
     // Windows uses schannel by default which uses system certs
@@ -699,6 +800,322 @@ void HTTP_PostMatchEvent(const char *event_type, const char *team_a, const char 
         gi.dprintf("HTTP_PostMatchEvent: Request queued for %s\n", event_type);
     }
 }
+
+// Weapon names for JSON output
+static const char *weapon_names[] = {
+    "invalid", "world", "bl", "sg", "ssg", "mg", "cg",
+    "hg", "gl", "rl", "hb", "rg", "bfg"
+};
+
+/**
+ * Escape a string for JSON (handles quotes and backslashes)
+ */
+static void JSON_EscapeString(char *dest, const char *src, size_t dest_size) {
+    size_t i = 0;
+    size_t j = 0;
+
+    while (src[i] && j < dest_size - 2) {
+        if (src[i] == '"' || src[i] == '\\') {
+            dest[j++] = '\\';
+        }
+        dest[j++] = src[i++];
+    }
+    dest[j] = '\0';
+}
+
+/**
+ * Send full match stats to web API at end of match
+ */
+void HTTP_PostMatchEndWithStats(matchinfo_t *match, qboolean forfeit)
+{
+    posthandle_t *ph = NULL;
+    unsigned i, w;
+    cvar_t *hostname;
+    char *p;
+    size_t remaining;
+    int written;
+    teamplayer_t *player;
+    char escaped_name[64];
+    int total_damage_dealt, total_damage_received;
+
+    // Check if API URL is configured
+    if (!g_api_url->string[0]) {
+        if (g_http_debug->value) {
+            gi.dprintf("HTTP_PostMatchEndWithStats: g_api_url not set, skipping.\n");
+        }
+        return;
+    }
+
+    if (!g_http_enabled->value) {
+        return;
+    }
+
+    if (!match || !match->teamplayers) {
+        gi.dprintf("HTTP_PostMatchEndWithStats: No match data available.\n");
+        return;
+    }
+
+    // Find a free POST handle
+    for (i = 0; i < MAX_POST_HANDLES; i++) {
+        if (!post_handles[i].inuse) {
+            ph = &post_handles[i];
+            break;
+        }
+    }
+
+    if (!ph) {
+        gi.dprintf("HTTP_PostMatchEndWithStats: No free POST handles available.\n");
+        return;
+    }
+
+    hostname = gi.cvar("hostname", "unknown", 0);
+
+    p = ph->payload;
+    remaining = sizeof(ph->payload);
+
+    // Start JSON - match metadata
+    written = snprintf(p, remaining,
+        "{"
+        "\"event\":\"MATCH_ENDED\","
+        "\"match_id\":\"%s\","
+        "\"server\":\"%s\","
+        "\"map\":\"%s\","
+        "\"mode\":%d,"
+        "\"timelimit\":%d,"
+        "\"forfeit\":%s,"
+        "\"teams\":{"
+            "\"a\":{\"name\":\"%s\",\"score\":%d},"
+            "\"b\":{\"name\":\"%s\",\"score\":%d}"
+        "},"
+        "\"winner\":\"%s\","
+        "\"players\":[",
+        match->match_id,
+        hostname->string,
+        match->mapname,
+        match->game_mode,
+        match->timelimit,
+        forfeit ? "true" : "false",
+        match->teamnames[TEAM_A],
+        match->scores[TEAM_A],
+        match->teamnames[TEAM_B],
+        match->scores[TEAM_B],
+        match->winning_team == TEAM_A ? "a" :
+            (match->winning_team == TEAM_B ? "b" : "tie")
+    );
+
+    if (written < 0 || (size_t)written >= remaining) {
+        gi.dprintf("HTTP_PostMatchEndWithStats: Buffer overflow in header.\n");
+        return;
+    }
+    p += written;
+    remaining -= written;
+
+    // Add each player's stats
+    for (i = 0; i < match->num_teamplayers; i++) {
+        player = &match->teamplayers[i];
+
+        // Calculate total damage
+        total_damage_dealt = 0;
+        total_damage_received = 0;
+        for (w = 0; w < TDMG_MAX; w++) {
+            total_damage_dealt += player->damage_dealt[w];
+            total_damage_received += player->damage_received[w];
+        }
+
+        JSON_EscapeString(escaped_name, player->name, sizeof(escaped_name));
+
+        // Player base stats
+        written = snprintf(p, remaining,
+            "%s{"
+            "\"name\":\"%s\","
+            "\"team\":\"%s\","
+            "\"ping\":%u,"
+            "\"kills\":{\"enemy\":%u,\"team\":%u,\"self\":%u},"
+            "\"deaths\":%u,"
+            "\"telefrags\":%u,"
+            "\"damage\":{\"dealt\":%d,\"received\":%d,\"team_dealt\":%u,\"team_received\":%u},"
+            "\"powerups\":{"
+                "\"quad\":{\"kills\":%u,\"deaths\":%u,\"dealt\":%u,\"received\":%u},"
+                "\"pent\":{\"kills\":%u,\"deaths\":%u,\"dealt\":%u,\"received\":%u}"
+            "},"
+            "\"weapons\":{",
+            i > 0 ? "," : "",
+            escaped_name,
+            player->team == TEAM_A ? "a" : "b",
+            player->ping,
+            player->enemy_kills,
+            player->team_kills,
+            player->suicides,
+            player->deaths,
+            player->telefrags,
+            total_damage_dealt,
+            total_damage_received,
+            player->team_dealt,
+            player->team_recvd,
+            player->quad_kills,
+            player->quad_deaths,
+            player->quad_dealt,
+            player->quad_recvd,
+            player->pent_kills,
+            player->pent_deaths,
+            player->pent_dealt,
+            player->pent_recvd
+        );
+
+        if (written < 0 || (size_t)written >= remaining) {
+            gi.dprintf("HTTP_PostMatchEndWithStats: Buffer overflow in player %d.\n", i);
+            return;
+        }
+        p += written;
+        remaining -= written;
+
+        // Add weapon stats (skip INVALID and WORLD)
+        for (w = TDMG_BLASTER; w < TDMG_MAX; w++) {
+            // Skip weapons with no activity
+            if (player->shots_fired[w] == 0 && player->killweapons[w] == 0 &&
+                player->deathweapons[w] == 0 && player->damage_dealt[w] == 0) {
+                continue;
+            }
+
+            written = snprintf(p, remaining,
+                "%s\"%s\":{\"shots\":%u,\"hits\":%u,\"kills\":%u,\"deaths\":%u,\"dmg_dealt\":%u,\"dmg_recv\":%u}",
+                (p[-1] == '{') ? "" : ",",
+                weapon_names[w],
+                player->shots_fired[w],
+                player->shots_hit[w],
+                player->killweapons[w],
+                player->deathweapons[w],
+                player->damage_dealt[w],
+                player->damage_received[w]
+            );
+
+            if (written < 0 || (size_t)written >= remaining) {
+                gi.dprintf("HTTP_PostMatchEndWithStats: Buffer overflow in weapons.\n");
+                return;
+            }
+            p += written;
+            remaining -= written;
+        }
+
+        // Close weapons object, add items object
+        // Note: ITEM_ITEM_HEALTH only tracks mega health (regular health not tracked)
+        // Armor shards also not tracked per TDM_IsTrackableItem
+        written = snprintf(p, remaining,
+            "},\"items\":{"
+            "\"ra\":%u,\"ya\":%u,\"ga\":%u,"
+            "\"mh\":%u,"
+            "\"quad\":%u,\"pent\":%u"
+            "}}",
+            player->items_collected[ITEM_ITEM_ARMOR_BODY],
+            player->items_collected[ITEM_ITEM_ARMOR_COMBAT],
+            player->items_collected[ITEM_ITEM_ARMOR_JACKET],
+            player->items_collected[ITEM_ITEM_HEALTH],
+            player->items_collected[ITEM_ITEM_QUAD],
+            player->items_collected[ITEM_ITEM_INVULNERABILITY]
+        );
+        if (written < 0 || (size_t)written >= remaining) {
+            return;
+        }
+        p += written;
+        remaining -= written;
+    }
+
+    // Close players array and root object
+    written = snprintf(p, remaining, "]}");
+    if (written < 0 || (size_t)written >= remaining) {
+        gi.dprintf("HTTP_PostMatchEndWithStats: Buffer overflow in footer.\n");
+        return;
+    }
+    p += written;
+
+    Q_strncpy(ph->url, g_api_url->string, sizeof(ph->url) - 1);
+
+    if (g_http_debug->value) {
+        gi.dprintf("HTTP_PostMatchEndWithStats: Payload size=%d bytes\n",
+                   (int)(p - ph->payload));
+    }
+
+    ph->curl = curl_easy_init();
+    if (!ph->curl) {
+        gi.dprintf("HTTP_PostMatchEndWithStats: curl_easy_init failed.\n");
+        return;
+    }
+
+    // Setup headers
+    ph->headers = NULL;
+    ph->headers = curl_slist_append(ph->headers, "Content-Type: application/json");
+
+    // Configure curl options
+    curl_easy_setopt(ph->curl, CURLOPT_URL, ph->url);
+    curl_easy_setopt(ph->curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(ph->curl, CURLOPT_POSTFIELDS, ph->payload);
+    curl_easy_setopt(ph->curl, CURLOPT_HTTPHEADER, ph->headers);
+    curl_easy_setopt(ph->curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(ph->curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(ph->curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(ph->curl, CURLOPT_USERAGENT, "OpenTDM (" OPENTDM_VERSION ")");
+
+    // Discard response body
+    curl_easy_setopt(ph->curl, CURLOPT_WRITEFUNCTION, HTTP_DiscardResponse);
+
+    // Proxy settings
+    if (g_http_proxy->string[0]) {
+        curl_easy_setopt(ph->curl, CURLOPT_PROXY, g_http_proxy->string);
+    } else {
+        curl_easy_setopt(ph->curl, CURLOPT_PROXY, "");
+        curl_easy_setopt(ph->curl, CURLOPT_NOPROXY, "*");
+    }
+
+    // Bind to specific interface if configured
+    if (g_http_bind->string[0]) {
+        curl_easy_setopt(ph->curl, CURLOPT_INTERFACE, g_http_bind->string);
+    }
+
+    // SSL settings
+    curl_easy_setopt(ph->curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(ph->curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+    // Use pre-resolved DNS to avoid blocking during match
+    if (api_resolve_list) {
+        curl_easy_setopt(ph->curl, CURLOPT_RESOLVE, api_resolve_list);
+    }
+
+#ifndef _WIN32
+    if (access("/etc/ssl/certs/ca-certificates.crt", R_OK) == 0) {
+        curl_easy_setopt(ph->curl, CURLOPT_CAINFO, "/etc/ssl/certs/ca-certificates.crt");
+    } else if (access("/etc/pki/tls/certs/ca-bundle.crt", R_OK) == 0) {
+        curl_easy_setopt(ph->curl, CURLOPT_CAINFO, "/etc/pki/tls/certs/ca-bundle.crt");
+    } else if (access("/etc/ssl/ca-bundle.pem", R_OK) == 0) {
+        curl_easy_setopt(ph->curl, CURLOPT_CAINFO, "/etc/ssl/ca-bundle.pem");
+    }
+#endif
+
+    curl_easy_setopt(ph->curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(ph->curl, CURLOPT_FOLLOWLOCATION, 0L);
+
+    if (g_http_debug->value) {
+        curl_easy_setopt(ph->curl, CURLOPT_DEBUGFUNCTION, CURL_Debug);
+        curl_easy_setopt(ph->curl, CURLOPT_VERBOSE, 1L);
+    }
+
+    // Add to multi handle
+    if (curl_multi_add_handle(multi, ph->curl) != CURLM_OK) {
+        gi.dprintf("HTTP_PostMatchEndWithStats: curl_multi_add_handle failed.\n");
+        curl_easy_cleanup(ph->curl);
+        ph->curl = NULL;
+        curl_slist_free_all(ph->headers);
+        ph->headers = NULL;
+        return;
+    }
+
+    ph->inuse = true;
+    handleCount++;
+
+    if (g_http_debug->value) {
+        gi.dprintf("HTTP_PostMatchEndWithStats: Request queued with %d players.\n",
+                   match->num_teamplayers);
+    }
+}
 #else
 
 /**
@@ -734,13 +1151,29 @@ void HTTP_ResolveOTDMServer(void) {
 /**
  *
  */
-void HTTP_PostMatchEvent(const char *event_type, const char *team_a, const char *team_b,
+void HTTP_ResolveAPIServer(void) {
+}
+
+/**
+ *
+ */
+void HTTP_PostMatchEvent(const char *event_type, const char *match_id,
+                         const char *team_a, const char *team_b,
                          int score_a, int score_b, qboolean forfeit) {
     (void)event_type;
+    (void)match_id;
     (void)team_a;
     (void)team_b;
     (void)score_a;
     (void)score_b;
+    (void)forfeit;
+}
+
+/**
+ *
+ */
+void HTTP_PostMatchEndWithStats(matchinfo_t *match, qboolean forfeit) {
+    (void)match;
     (void)forfeit;
 }
 #endif

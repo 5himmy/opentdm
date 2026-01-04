@@ -226,7 +226,7 @@ void InitGame(void) {
     g_http_proxy = gi.cvar("g_http_proxy", "", 0);
 
     // API URL for match events (POST requests)
-    g_api_url = gi.cvar("g_api_url", "", 0);
+    g_api_url = gi.cvar("g_api_url", "", CVAR_ARCHIVE);
 
     // players idle this long will be switched to specs (in seconds)
     g_idle_time = gi.cvar("g_idle_time", "300", 0);
