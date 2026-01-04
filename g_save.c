@@ -225,6 +225,9 @@ void InitGame(void) {
     // libcurl - proxy address for http access
     g_http_proxy = gi.cvar("g_http_proxy", "", 0);
 
+    // API URL for match events (POST requests)
+    g_api_url = gi.cvar("g_api_url", "", 0);
+
     // players idle this long will be switched to specs (in seconds)
     g_idle_time = gi.cvar("g_idle_time", "300", 0);
 

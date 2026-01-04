@@ -34,6 +34,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <unistd.h>
 #endif
 
 #include <curl/curl.h>
@@ -59,6 +60,18 @@ typedef struct dlhandle_s {
 #define MIN_DLSIZE	0x8000		// 32 KiB
 
 dlhandle_t downloads[MAX_DOWNLOADS];
+
+// POST request handle for async API calls
+typedef struct posthandle_s {
+    CURL *curl;
+    struct curl_slist *headers;
+    char payload[2048];
+    char url[512];
+    qboolean inuse;
+} posthandle_t;
+
+#define MAX_POST_HANDLES 4
+static posthandle_t post_handles[MAX_POST_HANDLES];
 
 static CURLM *multi = NULL;
 static unsigned handleCount = 0;
@@ -310,6 +323,33 @@ void HTTP_Shutdown(void) {
 }
 
 /**
+ * Handle completion of a POST request
+ */
+static void HTTP_FinishPost(posthandle_t *ph, CURLcode result) {
+    long responseCode = 0;
+
+    if (result == CURLE_OK) {
+        curl_easy_getinfo(ph->curl, CURLINFO_RESPONSE_CODE, &responseCode);
+        if (g_http_debug->value) {
+            gi.dprintf("HTTP POST: %s - Response: %ld\n", ph->url, responseCode);
+        }
+    } else {
+        gi.dprintf("HTTP POST Error: %s - %s\n", ph->url, curl_easy_strerror(result));
+    }
+
+    curl_multi_remove_handle(multi, ph->curl);
+    curl_easy_cleanup(ph->curl);
+    ph->curl = NULL;
+
+    if (ph->headers) {
+        curl_slist_free_all(ph->headers);
+        ph->headers = NULL;
+    }
+
+    ph->inuse = false;
+}
+
+/**
  * A download finished, find out what it was, whether there were any errors and
  * if so, how severe. If none, rename file and other such stuff.
  */
@@ -323,6 +363,7 @@ static void HTTP_FinishDownload(void) {
     double timeTaken;
     double fileSize;
     unsigned i;
+    qboolean found_post;
 
     do {
         msg = curl_multi_info_read(multi, &msgs_in_queue);
@@ -339,13 +380,29 @@ static void HTTP_FinishDownload(void) {
 
         curl = msg->easy_handle;
 
+        // Check if this is a POST request
+        found_post = false;
+        for (i = 0; i < MAX_POST_HANDLES; i++) {
+            if (post_handles[i].inuse && post_handles[i].curl == curl) {
+                HTTP_FinishPost(&post_handles[i], msg->data.result);
+                found_post = true;
+                break;
+            }
+        }
+        if (found_post) {
+            continue;
+        }
+
+        // Check downloads
         for (i = 0; i < MAX_DOWNLOADS; i++) {
             if (downloads[i].curl == curl)
                 break;
         }
 
         if (i == MAX_DOWNLOADS) {
-            TDM_Error("HTTP_FinishDownload: Handle not found!");
+            gi.dprintf("HTTP_FinishDownload: Handle not found, ignoring.\n");
+            curl_multi_remove_handle(multi, curl);
+            continue;
         }
 
         dl = &downloads[i];
@@ -483,6 +540,165 @@ void HTTP_RunDownloads(void) {
         gi.dprintf("HTTP_RunDownloads: curl_multi_perform error.\n");
     }
 }
+
+/**
+ * Discard callback - we don't care about response body for POST requests
+ */
+static size_t HTTP_DiscardResponse(void *ptr, size_t size, size_t nmemb, void *data) {
+    (void)ptr;
+    (void)data;
+    return size * nmemb;
+}
+
+/**
+ * Send match event to web API (non-blocking, async)
+ * Uses curl_multi for async operation - won't freeze the game server
+ */
+void HTTP_PostMatchEvent(const char *event_type, const char *team_a, const char *team_b,
+                         int score_a, int score_b, qboolean forfeit)
+{
+    posthandle_t *ph = NULL;
+    unsigned i;
+    cvar_t *hostname;
+    char *map_name;
+
+    // Check if API URL is configured
+    if (!g_api_url->string[0]) {
+        if (g_http_debug->value) {
+            gi.dprintf("HTTP_PostMatchEvent: g_api_url not set, skipping.\n");
+        }
+        return;
+    }
+
+    if (!g_http_enabled->value) {
+        return;
+    }
+
+    // Find a free POST handle
+    for (i = 0; i < MAX_POST_HANDLES; i++) {
+        if (!post_handles[i].inuse) {
+            ph = &post_handles[i];
+            break;
+        }
+    }
+
+    if (!ph) {
+        gi.dprintf("HTTP_PostMatchEvent: No free POST handles available.\n");
+        return;
+    }
+
+    hostname = gi.cvar("hostname", "unknown", 0);
+    map_name = level.mapname;
+
+    // Build JSON payload (stored in handle to persist during async operation)
+    Com_sprintf(ph->payload, sizeof(ph->payload),
+        "{"
+        "\"event\":\"%s\","
+        "\"server\":\"%s\","
+        "\"map\":\"%s\","
+        "\"team_a\":\"%s\","
+        "\"team_b\":\"%s\","
+        "\"score_a\":%d,"
+        "\"score_b\":%d,"
+        "\"forfeit\":%s"
+        "}",
+        event_type,
+        hostname->string,
+        map_name,
+        team_a,
+        team_b,
+        score_a,
+        score_b,
+        forfeit ? "true" : "false"
+    );
+
+    Q_strncpy(ph->url, g_api_url->string, sizeof(ph->url) - 1);
+
+    if (g_http_debug->value) {
+        gi.dprintf("HTTP_PostMatchEvent: URL=%s Payload=%s\n", ph->url, ph->payload);
+    }
+
+    ph->curl = curl_easy_init();
+    if (!ph->curl) {
+        gi.dprintf("HTTP_PostMatchEvent: curl_easy_init failed.\n");
+        return;
+    }
+
+    // Setup headers
+    ph->headers = NULL;
+    ph->headers = curl_slist_append(ph->headers, "Content-Type: application/json");
+
+    // Configure curl options
+    curl_easy_setopt(ph->curl, CURLOPT_URL, ph->url);
+    curl_easy_setopt(ph->curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(ph->curl, CURLOPT_POSTFIELDS, ph->payload);
+    curl_easy_setopt(ph->curl, CURLOPT_HTTPHEADER, ph->headers);
+    curl_easy_setopt(ph->curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(ph->curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(ph->curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(ph->curl, CURLOPT_USERAGENT, "OpenTDM (" OPENTDM_VERSION ")");
+
+    // Discard response body
+    curl_easy_setopt(ph->curl, CURLOPT_WRITEFUNCTION, HTTP_DiscardResponse);
+
+    // Proxy settings
+    if (g_http_proxy->string[0]) {
+        curl_easy_setopt(ph->curl, CURLOPT_PROXY, g_http_proxy->string);
+    } else {
+        curl_easy_setopt(ph->curl, CURLOPT_PROXY, "");
+        curl_easy_setopt(ph->curl, CURLOPT_NOPROXY, "*");
+    }
+
+    // Bind to specific interface if configured
+    if (g_http_bind->string[0]) {
+        curl_easy_setopt(ph->curl, CURLOPT_INTERFACE, g_http_bind->string);
+    }
+
+    // SSL settings - verify by default (secure)
+    curl_easy_setopt(ph->curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(ph->curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+    // Set CA bundle path for static libcurl (try common locations)
+#ifdef _WIN32
+    // Windows uses schannel by default which uses system certs
+#else
+    // Try common CA bundle locations on Linux
+    if (access("/etc/ssl/certs/ca-certificates.crt", R_OK) == 0) {
+        curl_easy_setopt(ph->curl, CURLOPT_CAINFO, "/etc/ssl/certs/ca-certificates.crt");
+    } else if (access("/etc/pki/tls/certs/ca-bundle.crt", R_OK) == 0) {
+        curl_easy_setopt(ph->curl, CURLOPT_CAINFO, "/etc/pki/tls/certs/ca-bundle.crt");
+    } else if (access("/etc/ssl/ca-bundle.pem", R_OK) == 0) {
+        curl_easy_setopt(ph->curl, CURLOPT_CAINFO, "/etc/ssl/ca-bundle.pem");
+    }
+#endif
+
+    // HTTP/1.1, no redirects
+    curl_easy_setopt(ph->curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(ph->curl, CURLOPT_FOLLOWLOCATION, 0L);
+
+    // Debug output if enabled
+    if (g_http_debug->value) {
+        curl_easy_setopt(ph->curl, CURLOPT_DEBUGFUNCTION, CURL_Debug);
+        curl_easy_setopt(ph->curl, CURLOPT_VERBOSE, 1L);
+    }
+
+    // Add to multi handle for async processing
+    if (curl_multi_add_handle(multi, ph->curl) != CURLM_OK) {
+        gi.dprintf("HTTP_PostMatchEvent: curl_multi_add_handle failed.\n");
+        curl_easy_cleanup(ph->curl);
+        ph->curl = NULL;
+        curl_slist_free_all(ph->headers);
+        ph->headers = NULL;
+        return;
+    }
+
+    ph->inuse = true;
+    handleCount++;
+
+    if (g_http_debug->value) {
+        gi.dprintf("HTTP_PostMatchEvent: Request queued for %s\n", event_type);
+    }
+}
 #else
 
 /**
@@ -513,5 +729,18 @@ qboolean HTTP_QueueDownload(tdm_download_t *d) {
  *
  */
 void HTTP_ResolveOTDMServer(void) {
+}
+
+/**
+ *
+ */
+void HTTP_PostMatchEvent(const char *event_type, const char *team_a, const char *team_b,
+                         int score_a, int score_b, qboolean forfeit) {
+    (void)event_type;
+    (void)team_a;
+    (void)team_b;
+    (void)score_a;
+    (void)score_b;
+    (void)forfeit;
 }
 #endif

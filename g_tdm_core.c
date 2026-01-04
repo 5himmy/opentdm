@@ -430,6 +430,12 @@ void TDM_BeginMatch(void) {
 
     gi.bprintf(PRINT_HIGH, "Fight!\n");
 
+    // Send match start to web API
+    HTTP_PostMatchEvent("MATCH_START",
+                        match_rosters.team_a.names,
+                        match_rosters.team_b.names,
+                        0, 0, false);
+
     //should already be 0, check this is needed
     teaminfo[TEAM_A].score = teaminfo[TEAM_B].score = 0;
 
@@ -1416,6 +1422,14 @@ void TDM_PrintMatchEnd(void)
                    score_b,
                    match_rosters.team_b.names);
     }
+
+    // Send match end to web API
+    HTTP_PostMatchEvent("MATCH_ENDED",
+                        match_rosters.team_a.names,
+                        match_rosters.team_b.names,
+                        score_a,
+                        score_b,
+                        forfeit);
 }
 
 /**

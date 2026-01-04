@@ -770,6 +770,7 @@ extern cvar_t *g_http_proxy;
 extern cvar_t *g_http_debug;
 extern cvar_t *g_http_path;
 extern cvar_t *g_http_domain;
+extern cvar_t *g_api_url;
 extern cvar_t *g_playerconfig_enabled;
 extern cvar_t *g_debug_spawns;
 extern cvar_t *g_maplistfile;

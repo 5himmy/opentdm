@@ -128,6 +128,7 @@ cvar_t *g_http_debug;
 
 cvar_t *g_http_path;
 cvar_t *g_http_domain;
+cvar_t *g_api_url;
 
 cvar_t *g_playerconfig_enabled;
 
