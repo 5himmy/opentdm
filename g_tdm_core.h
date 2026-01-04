@@ -33,6 +33,7 @@ void TDM_CreateMaplist(void);
 void TDM_DeleteMVD(char *name);
 void TDM_EndIntermission(void);
 void TDM_EndMatch(void);
+void TDM_PrintMatchEnd(void);
 void TDM_Error(const char *fmt, ...);
 void TDM_FixDeltaAngles(void);
 char* TDM_GetSmartMap(int playercount);

@@ -1343,12 +1343,87 @@ void TDM_BeginIntermission(void) {
 }
 
 /**
+ * Print match end announcement with player names and scores
+ */
+void TDM_PrintMatchEnd(void)
+{
+    int score_a = teaminfo[TEAM_A].score;
+    int score_b = teaminfo[TEAM_B].score;
+    qboolean forfeit = false;
+    int winner = 0;
+
+    // Check for forfeit (team with no players)
+    if (teaminfo[TEAM_A].players == 0 && teaminfo[TEAM_B].players == 0)
+    {
+        // Match canceled - no announcement needed, handled elsewhere
+        return;
+    }
+    else if (teaminfo[TEAM_A].players == 0)
+    {
+        winner = TEAM_B;
+        forfeit = true;
+    }
+    else if (teaminfo[TEAM_B].players == 0)
+    {
+        winner = TEAM_A;
+        forfeit = true;
+    }
+
+    if (forfeit)
+    {
+        // Forfeit win
+        if (winner == TEAM_A)
+        {
+            gi.bprintf(PRINT_HIGH, "MATCH_ENDED: %s wins %d to %d by forfeit against %s\n",
+                       match_rosters.team_a.names,
+                       score_a,
+                       score_b,
+                       match_rosters.team_b.names);
+        }
+        else
+        {
+            gi.bprintf(PRINT_HIGH, "MATCH_ENDED: %s wins %d to %d by forfeit against %s\n",
+                       match_rosters.team_b.names,
+                       score_b,
+                       score_a,
+                       match_rosters.team_a.names);
+        }
+    }
+    else if (score_a > score_b)
+    {
+        // Team A wins
+        gi.bprintf(PRINT_HIGH, "MATCH_ENDED: %s wins %d to %d against %s\n",
+                   match_rosters.team_a.names,
+                   score_a,
+                   score_b,
+                   match_rosters.team_b.names);
+    }
+    else if (score_b > score_a)
+    {
+        // Team B wins
+        gi.bprintf(PRINT_HIGH, "MATCH_ENDED: %s wins %d to %d against %s\n",
+                   match_rosters.team_b.names,
+                   score_b,
+                   score_a,
+                   match_rosters.team_a.names);
+    }
+    else
+    {
+        // Tie
+        gi.bprintf(PRINT_HIGH, "MATCH_ENDED: %s ties %d to %d with %s\n",
+                   match_rosters.team_a.names,
+                   score_a,
+                   score_b,
+                   match_rosters.team_b.names);
+    }
+}
+
+/**
  * A match has ended through some means.
  * Overtime / SD is handled in CheckTimes.
  */
 void TDM_EndMatch(void) {
-    qboolean forfeit;
-    int winner, loser;
+    int winner;
     edict_t *ent;
 
     //cancel any mid-game vote (restart, etc)
@@ -1369,44 +1444,22 @@ void TDM_EndMatch(void) {
     }
 
     winner = 0;
-    loser = 0;
-    forfeit = false;
 
     if (teaminfo[TEAM_A].players == 0 && teaminfo[TEAM_B].players == 0) {
         winner = TEAM_SPEC;
-        loser = TEAM_SPEC;
         gi.bprintf(PRINT_HIGH, "Match canceled, no players remaining.\n");
     } else if (teaminfo[TEAM_A].players == 0) {
         winner = TEAM_B;
-        loser = TEAM_A;
-        forfeit = true;
     } else if (teaminfo[TEAM_B].players == 0) {
         winner = TEAM_A;
-        loser = TEAM_B;
-        forfeit = true;
     } else if (teaminfo[TEAM_A].score > teaminfo[TEAM_B].score) {
         winner = TEAM_A;
-        loser = TEAM_B;
     } else if (teaminfo[TEAM_B].score > teaminfo[TEAM_A].score) {
         winner = TEAM_B;
-        loser = TEAM_A;
-    } else {
-        gi.bprintf(PRINT_HIGH, "Tie game, %d to %d.\n", teaminfo[TEAM_A].score,
-                teaminfo[TEAM_A].score);
     }
 
-    if (winner) {
-        if (forfeit) {
-            gi.bprintf(PRINT_HIGH, "Match ended.\n");
-            gi.bprintf(PRINT_HIGH, "%s wins by forfeit!\n",
-                    teaminfo[winner].name);
-        } else {
-            gi.bprintf(PRINT_HIGH, "Timelimit hit. Match ended.\n");
-            gi.bprintf(PRINT_HIGH, "%s wins, %d to %d.\n",
-                    teaminfo[winner].name, teaminfo[winner].score,
-                    teaminfo[loser].score);
-        }
-    }
+    // Print match end announcement with player names
+    TDM_PrintMatchEnd();
 
     current_matchinfo.winning_team = winner;
 
