@@ -1369,6 +1369,13 @@ void TDM_PrintMatchEnd(void)
     if (teaminfo[TEAM_A].players == 0 && teaminfo[TEAM_B].players == 0)
     {
         // Match canceled - no announcement needed, handled elsewhere
+        HTTP_PostMatchEvent("MATCH_ENDED",
+                        current_matchinfo.match_id,
+                        match_rosters.team_a.names,
+                        match_rosters.team_b.names,
+                        teaminfo[TEAM_A].score,
+                        teaminfo[TEAM_B].score,
+                        forfeit);
         return;
     }
     else if (teaminfo[TEAM_A].players == 0)
@@ -1464,6 +1471,10 @@ void TDM_EndMatch(void) {
     if (teaminfo[TEAM_A].players == 0 && teaminfo[TEAM_B].players == 0) {
         winner = TEAM_SPEC;
         gi.bprintf(PRINT_HIGH, "Match canceled, no players remaining.\n");
+        current_matchinfo.winning_team = winner;
+        current_matchinfo.scores[TEAM_A] = teaminfo[TEAM_A].score;
+        current_matchinfo.scores[TEAM_B] = teaminfo[TEAM_B].score;
+        HTTP_PostMatchEndWithStats(&current_matchinfo, forfeit);
     } else if (teaminfo[TEAM_A].players == 0) {
         winner = TEAM_B;
         forfeit = true;
@@ -1482,15 +1493,6 @@ void TDM_EndMatch(void) {
     current_matchinfo.winning_team = winner;
     current_matchinfo.scores[TEAM_A] = teaminfo[TEAM_A].score;
     current_matchinfo.scores[TEAM_B] = teaminfo[TEAM_B].score;
-
-    // Send match end event to web API
-    HTTP_PostMatchEvent("MATCH_ENDED",
-                        current_matchinfo.match_id,
-                        match_rosters.team_a.names,
-                        match_rosters.team_b.names,
-                        teaminfo[TEAM_A].score,
-                        teaminfo[TEAM_B].score,
-                        forfeit);
 
     // Send full match stats to web API
     HTTP_PostMatchEndWithStats(&current_matchinfo, forfeit);
