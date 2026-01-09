@@ -895,9 +895,9 @@ void HTTP_PostMatchEndWithStats(matchinfo_t *match, qboolean forfeit)
         match->game_mode,
         match->timelimit,
         forfeit ? "true" : "false",
-        match->teamnames[TEAM_A],
+        match_rosters.team_a.names,
         match->scores[TEAM_A],
-        match->teamnames[TEAM_B],
+        match_rosters.team_b.names,
         match->scores[TEAM_B],
         match->winning_team == TEAM_A ? "a" :
             (match->winning_team == TEAM_B ? "b" : "tie")

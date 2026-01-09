@@ -285,14 +285,16 @@ void TDM_Killed(edict_t *attacker, edict_t *victim, int mod) {
     attacker->client->resp.teamplayerinfo->killweapons[tdmg]++;
     victim->client->resp.teamplayerinfo->deathweapons[tdmg]++;
 
-    // count quad frags/deaths
-    if (attacker->client->quad_framenum > level.framenum) {
+    // count quad frags/deaths (enemy kills only)
+    if (attacker->client->quad_framenum > level.framenum &&
+        attacker->client->pers.team != victim->client->pers.team) {
         attacker->client->resp.teamplayerinfo->quad_kills++;
         victim->client->resp.teamplayerinfo->quad_deaths++;
     }
 
-    // count pent frags/deaths
-    if (attacker->client->invincible_framenum > level.framenum) {
+    // count pent frags/deaths (enemy kills only)
+    if (attacker->client->invincible_framenum > level.framenum &&
+        attacker->client->pers.team != victim->client->pers.team) {
         attacker->client->resp.teamplayerinfo->pent_kills++;
         victim->client->resp.teamplayerinfo->pent_deaths++;
     }
