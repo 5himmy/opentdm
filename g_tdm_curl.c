@@ -883,6 +883,7 @@ void HTTP_PostMatchEndWithStats(matchinfo_t *match, qboolean forfeit)
         "\"mode\":%d,"
         "\"timelimit\":%d,"
         "\"forfeit\":%s,"
+        "\"demo\":\"%s\","
         "\"teams\":{"
             "\"a\":{\"name\":\"%s\",\"score\":%d},"
             "\"b\":{\"name\":\"%s\",\"score\":%d}"
@@ -895,6 +896,7 @@ void HTTP_PostMatchEndWithStats(matchinfo_t *match, qboolean forfeit)
         match->game_mode,
         match->timelimit,
         forfeit ? "true" : "false",
+        game.mvd.filename,
         match_rosters.team_a.names,
         match->scores[TEAM_A],
         match_rosters.team_b.names,
