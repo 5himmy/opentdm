@@ -238,7 +238,7 @@ void TDM_ApplyVote(void) {
         gi.bprintf(PRINT_CHAT, "Restarting the match...\n");
 
         //end the current match on the API before starting a new one
-        HTTP_PostMatchEndWithStats(&current_matchinfo, forfeit);
+        HTTP_PostMatchEndWithStats(&current_matchinfo, false);
 
         //ugly, but we need to free dynamic memory since the match start allocs a new array
         gi.TagFree(current_matchinfo.teamplayers);
